@@ -1,0 +1,76 @@
+name: Daily Pipeline
+
+on:
+  schedule:
+    # 毎営業日 16:40 JST = 07:40 UTC (月〜金)
+    - cron: "40 7 * * 1-5"
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: スキーマ初期化 (新テーブルのみ追加)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m surge_radar.cli init-db
+
+      - name: 日次パイプライン実行
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SURGE_ENABLE_LLM: "0"
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_ADMIN_EMAIL: ${{ secrets.VAPID_ADMIN_EMAIL }}
+        run: python -m surge_radar.cli daily --limit 300
+
+      - name: 失敗時ログ出力
+        if: failure()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -c "
+import os, sys
+sys.path.insert(0, '.')
+try:
+    from surge_radar import db
+    with db.cursor() as c:
+        rows = c.execute('SELECT job,started_at,status,message FROM job_logs ORDER BY id DESC LIMIT 10').fetchall()
+    for r in rows:
+        print(r['job'], r['started_at'], r['status'], (r['message'] or '')[:200])
+except Exception as e:
+    print('log fetch failed:', e)
+" || true
+
+      - name: 実行サマリー
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -c "
+import os, sys
+sys.path.insert(0, '.')
+try:
+    from surge_radar import db, queries
+    ov = queries.overview()
+    print('=== Pipeline Summary ===')
+    print(f'Materials: {ov[\"materials\"]} total, {ov[\"mat_codes_today\"]} codes today')
+    print(f'Teacher: {ov[\"teacher_total\"]} total, live_fail={ov[\"live_fail\"]}')
+    print(f'Today predictions: {ov[\"cat_today\"]}')
+except Exception as e:
+    print('summary failed:', e)
+" || true

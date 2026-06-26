@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}予測履歴{% endblock %}
+{% block content %}
+<h1 class="text-xl md:text-2xl font-bold mb-1">予測履歴 / 成否判定</h1>
+<p class="text-xs md:text-sm text-slate-400 mb-4">判定済みの予測。+20%到達(S/A/B)・惜しい・失敗を記録。</p>
+
+{% if not rows %}
+<div class="card p-8 text-center text-slate-400">判定済みの予測がまだありません(予測から20営業日後に確定)。</div>
+{% else %}
+
+<!-- モバイル: カード表示 -->
+<div class="grid gap-2 md:hidden">
+  {% for r in rows %}
+  <div class="card p-3">
+    <div class="flex items-start gap-2">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <a href="/pred/{{r.id}}" class="font-semibold text-sm hover:text-acc no-underline text-white">{{r.name or r.code}}</a>
+          <span class="text-xs text-slate-500">{{r.code}}</span>
+          <span class="chip bg-panel2 text-slate-400">{{r.category}}</span>
+        </div>
+        <div class="text-xs text-slate-400 mt-0.5">{{r.run_date}}</div>
+      </div>
+      <span class="chip shrink-0 {{ 'bg-good/20 text-good border border-good/40' if r.result_class in ['S','A','B'] else ('bg-warn/20 text-warn border border-warn/40' if r.result_class=='near' else 'bg-bad/20 text-bad border border-bad/40') }}">
+        {{ result_labels.get(r.result_class,r.result_class) }}
+      </span>
+    </div>
+    <div class="flex gap-3 text-xs mt-1.5 flex-wrap text-slate-400">
+      <span class="{{ 'text-good' if (r.max_up_20d or 0)>0 else 'text-bad' }}">最大 {{ '%+.1f%%'|format((r.max_up_20d or 0)*100) }}</span>
+      <span>{{ r.days_to_20pct ~ '日' if r.days_to_20pct else '未到達' }}</span>
+      <span class="text-bad">最大下落 {{ '%+.1f%%'|format((r.max_drawdown or 0)*100) }}</span>
+      {% if r.failure_tags %}<span class="text-bad">{{r.failure_tags|join(', ')}}</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- デスクトップ: テーブル表示 -->
+<div class="card overflow-x-auto hidden md:block">
+<table class="w-full text-sm">
+  <thead><tr class="text-slate-400 text-left text-xs border-b border-line">
+    <th class="p-2">予測日</th><th>銘柄</th><th>分類</th><th>結果</th>
+    <th class="text-right">20日内最大</th><th class="text-right">到達日数</th><th class="text-right">最大下落</th><th>失敗タグ</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr class="border-b border-line/50 hover:bg-panel2">
+    <td class="p-2 whitespace-nowrap text-slate-400">{{r.run_date}}</td>
+    <td><a href="/pred/{{r.id}}">{{r.name or r.code}}</a> <span class="text-xs text-slate-600">{{r.code}}</span></td>
+    <td><span class="chip bg-panel2">{{r.category}}</span></td>
+    <td><span class="chip {{ 'bg-good/20 text-good' if r.result_class in ['S','A','B'] else ('bg-warn/20 text-warn' if r.result_class=='near' else 'bg-bad/20 text-bad') }}">{{ result_labels.get(r.result_class,r.result_class) }}</span></td>
+    <td class="text-right {{ 'text-good' if (r.max_up_20d or 0)>0 else 'text-bad' }}">{{ '%+.1f%%'|format((r.max_up_20d or 0)*100) }}</td>
+    <td class="text-right">{{ r.days_to_20pct or '—' }}</td>
+    <td class="text-right text-bad">{{ '%+.1f%%'|format((r.max_drawdown or 0)*100) }}</td>
+    <td class="text-xs text-slate-400">{{ r.failure_tags|join(', ') }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

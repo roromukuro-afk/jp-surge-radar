@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}的中率{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">的中率・失敗率の集計</h1>
+<p class="text-sm text-slate-400 mb-4">判定済み予測に対する成否。+20%到達(S/A/B)を的中とする。</p>
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+  <div class="card p-4"><div class="text-slate-400 text-xs">判定済み予測</div><div class="text-3xl font-bold">{{stats.total_judged}}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">的中率(+20%)</div><div class="text-3xl font-bold text-good">{{ '%.1f%%'|format((stats.hit_rate or 0)*100) if stats.hit_rate is not none else '—' }}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">的中+惜しい率</div><div class="text-3xl font-bold text-warn">{{ '%.1f%%'|format((stats.hit_or_near_rate or 0)*100) if stats.hit_or_near_rate is not none else '—' }}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">失敗タグ種類</div><div class="text-3xl font-bold">{{ stats.failure_tags|length }}</div></div>
+</div>
+
+<div class="grid md:grid-cols-2 gap-4">
+  <div class="card p-4">
+    <h2 class="font-semibold mb-3">結果クラス別</h2>
+    {% set order=['S','A','B','near','fail','danger_fail'] %}
+    {% for c in order %}{% set n=stats.by_class.get(c,0) %}
+    <div class="mb-2">
+      <div class="flex justify-between text-sm"><span>{{ result_labels.get(c,c) }}</span><span>{{n}}</span></div>
+      <div class="bar"><i style="width:{{ (n/stats.total_judged*100)|round if stats.total_judged else 0 }}%;background:{{ '#34d399' if c in ['S','A','B'] else ('#fbbf24' if c=='near' else '#f87171') }}"></i></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="card p-4">
+    <h2 class="font-semibold mb-3">失敗理由タグ分布</h2>
+    {% if stats.failure_tags %}
+    {% for tag,n in stats.failure_tags.items() %}
+    <div class="mb-2">
+      <div class="flex justify-between text-sm"><span>{{tag}}</span><span>{{n}}</span></div>
+      <div class="bar"><i style="width:{{ (n/(stats.failure_tags.values()|list|max)*100)|round }}%;background:#f87171"></i></div>
+    </div>
+    {% endfor %}
+    {% else %}<p class="text-sm text-slate-500">まだ失敗データがありません。</p>{% endif %}
+  </div>
+</div>
+
+{% if stats.by_origin %}
+<div class="card p-4 mt-4">
+  <h2 class="font-semibold mb-3">予測種別: バックフィル(検証) vs 実運用</h2>
+  <p class="text-xs text-slate-400 mb-3">
+    <span class="text-warn font-semibold">backfill</span> = 過去日付に遡って生成した検証用予測 /
+    <span class="text-good font-semibold">live</span> = 当日生成して未来で判定した実運用予測。
+    運用開始直後は backfill のみで、日数が経つにつれ live が蓄積されます。
+  </p>
+  <div class="grid md:grid-cols-2 gap-4">
+  {% for origin_key, s in stats.by_origin.items() %}
+  <div class="bg-base rounded-lg p-4 border border-line">
+    <div class="font-semibold mb-2">
+      {% if origin_key == 'live' %}
+        <span class="text-good">実運用予測</span>
+      {% else %}
+        <span class="text-warn">バックフィル(検証)</span>
+      {% endif %}
+      <span class="text-slate-400 text-xs ml-2">n={{s.total}}</span>
+    </div>
+    <div class="flex gap-5 text-sm">
+      <div>的中率(+20%): <span class="font-bold {{ 'text-good' if s.hit_rate else 'text-slate-400' }}">
+        {{ '%.1f%%'|format((s.hit_rate or 0)*100) if s.hit_rate is not none else '—' }}
+      </span></div>
+      <div>的中+惜しい: <span class="font-bold {{ 'text-warn' if s.hit_or_near_rate else 'text-slate-400' }}">
+        {{ '%.1f%%'|format((s.hit_or_near_rate or 0)*100) if s.hit_or_near_rate is not none else '—' }}
+      </span></div>
+    </div>
+    {% if s.total > 0 %}
+    <div class="mt-2 flex gap-2 flex-wrap text-xs">
+      {% for c in ['S','A','B','near','fail','danger_fail'] %}{% set n=s.by_class.get(c,0) %}{% if n > 0 %}
+      <span class="px-2 py-0.5 rounded {{ 'bg-good/20 text-good' if c in ['S','A','B'] else ('bg-warn/20 text-warn' if c=='near' else 'bg-bad/20 text-bad') }}">
+        {{c}}: {{n}}
+      </span>
+      {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card p-4 mt-4">
+  <h2 class="font-semibold mb-3">候補分類(A〜E)別の成否</h2>
+  <table class="w-full text-sm">
+    <thead><tr class="text-slate-400 text-left text-xs border-b border-line"><th class="p-2">分類</th><th>S/A/B</th><th>惜しい</th><th>失敗</th></tr></thead>
+    <tbody>
+    {% for cat,res in stats.by_category.items() %}
+    <tr class="border-b border-line/50">
+      <td class="p-2">{{cat}} {{cat_labels.get(cat,'')}}</td>
+      <td class="text-good">{{ (res.get('S',0)+res.get('A',0)+res.get('B',0)) }}</td>
+      <td class="text-warn">{{ res.get('near',0) }}</td>
+      <td class="text-bad">{{ res.get('fail',0)+res.get('danger_fail',0) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if stats.by_classify_path %}
+<div class="card p-4 mt-4">
+  <h2 class="font-semibold mb-3">B/C 分類条件パス別の成功率</h2>
+  <p class="text-xs text-slate-500 mb-3">どの分類条件ルートが実際に急騰につながっているかを追跡。的中率が低い条件は閾値調整の対象。</p>
+  {% set path_labels = {
+    'A_material_chart_volume': 'A: 材料+チャート+出来高',
+    'A_ai_chart_volume': 'A: 高AI類似+チャート+出来高',
+    'A_ml_ai_chart': 'A: 高ML確率+高AI+チャート',
+    'B_material_volume': 'B: 材料あり+出来高/ブレイク接近',
+    'B_chart_volume': 'B: 良チャート+良出来高',
+    'B_ai_signal': 'B: AI類似+ブレイク接近/チャート',
+    'B_very_strong_ai': 'B: 超高AI類似のみ',
+    'B_ml_prob_ai': 'B: 高ML確率+高AI',
+    'B_ml_prob_material': 'B: 高ML確率+材料あり',
+    'C_material_dryup': 'C: 強材料+売り枯れ',
+    'C_ai_dryup': 'C: 高AI+売り枯れ',
+    'C_material_chart': 'C: 強材料+チャート普通(出来高待ち)'
+  } %}
+  <table class="w-full text-sm">
+    <thead><tr class="text-slate-400 text-left text-xs border-b border-line">
+      <th class="p-2 font-normal">条件パス</th>
+      <th class="text-right font-normal">件数</th>
+      <th class="text-right font-normal">的中率</th>
+      <th class="font-normal pl-3">分布</th>
+    </tr></thead>
+    <tbody>
+    {% for path, s in (stats.by_classify_path.items()|list|sort(attribute=0)) %}
+    <tr class="border-b border-line/50">
+      <td class="p-2 text-slate-300">{{ path_labels.get(path, path) }}</td>
+      <td class="text-right">{{ s.total }}</td>
+      <td class="text-right font-semibold {{ 'text-good' if (s.hit_rate or 0) > 0.3 else ('text-warn' if (s.hit_rate or 0) > 0.15 else 'text-bad') }}">
+        {{ '%.0f%%'|format((s.hit_rate or 0)*100) if s.hit_rate is not none else '—' }}
+      </td>
+      <td class="pl-3 text-xs">
+        {% for c in ['S','A','B','near','fail','danger_fail'] %}{% set n=s.by_class.get(c,0) %}{% if n>0 %}
+        <span class="inline-block px-1 rounded {{ 'bg-good/20 text-good' if c in ['S','A','B'] else ('bg-warn/20 text-warn' if c=='near' else 'bg-bad/20 text-bad') }}">{{c}}:{{n}}</span>
+        {% endif %}{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="text-xs text-slate-500 mt-2">※ 的中率>30%: 有効条件 / 15-30%: 要調整 / <15%: 閾値を上げるかパス削除を検討</div>
+</div>
+{% endif %}
+{% endblock %}

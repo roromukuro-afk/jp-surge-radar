@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}データリーク検査{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">データリーク検査レポート</h1>
+<p class="text-sm text-slate-400 mb-4">T0時点より未来の価格・材料データが特徴量に混入していないことを静的コードレビュー＋動的検証で確認。</p>
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+  <div class="card p-4"><div class="text-slate-400 text-xs">総チェック数</div><div class="text-3xl font-bold">{{report.total_checks}}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">PASS</div><div class="text-3xl font-bold text-good">{{report.passed}}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">NOTE(警告)</div><div class="text-3xl font-bold text-warn">{{report.notes}}</div></div>
+  <div class="card p-4"><div class="text-slate-400 text-xs">FAIL</div><div class="text-3xl font-bold text-bad">{{report.failed}}</div></div>
+</div>
+
+<div class="card p-4 mb-4">
+  <div class="flex items-center gap-3">
+    <span class="text-2xl">{% if report.failed == 0 %}✅{% else %}⚠️{% endif %}</span>
+    <div>
+      <div class="font-bold text-lg">判定: {{report.verdict}}</div>
+      <div class="text-xs text-slate-400">検査日時: {{report.audited_at}}</div>
+    </div>
+  </div>
+  {% if sample_code %}
+  <div class="mt-2 text-sm text-slate-400">動的検証対象銘柄: {{sample_code}}</div>
+  {% endif %}
+</div>
+
+<form method="get" class="flex gap-2 mb-5">
+  <input name="code" value="{{sample_code}}" placeholder="4桁銘柄コードで動的検証(例: 7203)" class="bg-panel2 border border-line rounded px-3 py-1.5 text-sm w-48">
+  <button type="submit" class="px-3 py-1.5 bg-acc text-ink rounded text-sm font-semibold">実行</button>
+</form>
+
+<div class="space-y-3">
+{% for c in report.checks %}
+<div class="card p-4">
+  <div class="flex items-start gap-3">
+    <span class="text-sm font-bold mt-0.5
+      {% if c.status == 'PASS' %}text-good
+      {% elif c.status == 'NOTE' %}text-warn
+      {% else %}text-bad{% endif %}">{{c.status}}</span>
+    <div>
+      <div class="font-semibold text-sm mb-1">{{c.check}}</div>
+      <div class="text-xs text-slate-400 leading-relaxed">{{c.detail}}</div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+</div>
+
+<div class="card p-4 mt-5 text-xs text-slate-500">
+  <p class="font-semibold mb-2">検査方法について</p>
+  <p>静的チェック: コードの実行フローをトレースし、build_features(df, idx) が df.iloc[:idx+1] のみ参照することを確認。</p>
+  <p>動的チェック: 実際の銘柄データでT0/T0+1の値を比較し、特徴量に未来データが混入していないことを数値で確認。</p>
+  <p class="mt-2 text-warn">NOTE(材料の分布シフト)はデータリークではなく、過去教師データに材料特徴が入っていないことによるモデル品質の制約です。live_success/live_fail の蓄積で改善されます。</p>
+</div>
+{% endblock %}

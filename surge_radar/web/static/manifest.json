@@ -1,0 +1,36 @@
+{
+  "name": "急騰レーダー",
+  "short_name": "急騰",
+  "description": "日本株 短期急騰候補 AI スクリーナー",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1923",
+  "theme_color": "#0f1923",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "本日のランキング",
+      "url": "/",
+      "description": "AI急騰予測ランキングを開く"
+    },
+    {
+      "name": "B候補",
+      "url": "/?cat=B",
+      "description": "B(ブレイク確認)候補を表示"
+    }
+  ]
+}

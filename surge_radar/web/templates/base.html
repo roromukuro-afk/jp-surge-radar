@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}日本株 急騰レーダー{% endblock %}</title>
+  <!-- PWA -->
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#0f1923">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="急騰レーダー">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: {
+      ink: '#0b0f17', panel: '#131a26', panel2: '#1b2433', line: '#26344a',
+      acc: '#22d3ee', acc2: '#a78bfa', good: '#34d399', warn: '#fbbf24', bad: '#f87171'
+    }}}}
+  </script>
+  <style>
+    body{background:#0b0f17;color:#e5edf7;-webkit-text-size-adjust:100%}
+    .card{background:#131a26;border:1px solid #26344a;border-radius:14px}
+    .chip{font-size:11px;padding:2px 7px;border-radius:999px;font-weight:600;white-space:nowrap}
+    a{color:#67e8f9}
+    table{border-collapse:collapse}
+    .bar{height:6px;border-radius:999px;background:#26344a;overflow:hidden}
+    .bar>i{display:block;height:100%}
+    details>summary{list-style:none;cursor:pointer}
+    details>summary::-webkit-details-marker{display:none}
+    .arr{display:inline-block;transition:transform .15s;font-style:normal}
+    details[open] .arr{transform:rotate(90deg)}
+    #bell-btn.subscribed svg{stroke:#22d3ee;fill:#22d3ee22}
+  </style>
+</head>
+<body class="min-h-screen">
+
+<header class="sticky top-0 z-20 backdrop-blur bg-ink/80 border-b border-line">
+  <div class="max-w-6xl mx-auto px-4 py-3">
+    <div class="flex items-center">
+      <a href="/" class="font-bold text-base md:text-lg tracking-tight no-underline text-white shrink-0">
+        📈 急騰レーダー<span class="text-acc">/AI</span>
+      </a>
+      {% if overview and overview.cat_today %}
+      <div class="hidden sm:flex gap-1 ml-3 text-xs items-center">
+        {% if overview.cat_today.get('A') %}<span class="chip bg-good/20 text-good border border-good/30">A:{{overview.cat_today.A}}</span>{% endif %}
+        {% if overview.cat_today.get('B') %}<span class="chip bg-acc/20 text-acc border border-acc/30">B:{{overview.cat_today.B}}</span>{% endif %}
+        {% if overview.cat_today.get('C') %}<span class="chip bg-acc2/20 text-acc2 border border-acc2/30">C:{{overview.cat_today.C}}</span>{% endif %}
+      </div>
+      {% endif %}
+      <!-- Desktop nav -->
+      <nav class="hidden md:flex gap-1 text-sm ml-auto flex-wrap">
+        {% set nav=[('/','ランキング'),('/history','予測履歴'),('/accuracy','的中率'),('/failures','失敗教師'),('/model','再学習'),('/logs','実行ログ'),('/data-leak-check','リーク検査')] %}
+        {% for href,label in nav %}
+        <a href="{{href}}" class="px-3 py-1.5 rounded-lg hover:bg-panel2 no-underline {{ 'bg-panel2 text-white' if request.url.path==href else 'text-slate-300' }}">{{label}}</a>
+        {% endfor %}
+      </nav>
+      <!-- Push通知ベル -->
+      <button id="bell-btn" onclick="togglePushSubscription()"
+              class="hidden ml-2 p-2 rounded-lg hover:bg-panel2 text-slate-400 hover:text-acc transition-colors"
+              title="日次更新通知をON/OFF">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+      </button>
+      <!-- Mobile hamburger -->
+      <button id="mbtn" onclick="var n=document.getElementById('mnav');n.classList.toggle('hidden')"
+              class="md:hidden ml-1 p-2 rounded-lg hover:bg-panel2 text-slate-300" aria-label="メニュー">
+        <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="3" y1="6" x2="19" y2="6"/><line x1="3" y1="11" x2="19" y2="11"/><line x1="3" y1="16" x2="19" y2="16"/>
+        </svg>
+      </button>
+    </div>
+    <!-- Mobile dropdown nav -->
+    <div id="mnav" class="hidden md:hidden border-t border-line mt-2 pt-2 pb-1">
+      {% set nav=[('/','ランキング'),('/history','予測履歴'),('/accuracy','的中率'),('/failures','失敗教師'),('/model','再学習'),('/logs','実行ログ'),('/data-leak-check','リーク検査')] %}
+      <div class="grid grid-cols-2 gap-1 text-sm">
+        {% for href,label in nav %}
+        <a href="{{href}}" class="px-3 py-2 rounded-lg hover:bg-panel2 text-center no-underline {{ 'bg-panel2 text-white' if request.url.path==href else 'text-slate-300' }}">{{label}}</a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-3 md:px-4 py-4 md:py-5">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="max-w-6xl mx-auto px-4 py-5 text-xs text-slate-500 border-t border-line mt-8">
+  <p>⚠️ 本サイトは短期急騰パターンを分析・学習する<strong>研究支援・スクリーニングツール</strong>です。投資助言ではありません。損失リスクがあります。最終判断はご自身で行ってください。</p>
+  {% if overview %}
+  <p class="mt-2 text-slate-600">
+    銘柄 {{overview.securities}} / 株価取得 {{overview.priced_codes}} / 予測 {{overview.predictions}}(判定済 {{overview.judged}}) / 材料 {{overview.materials}}{% if overview.last_material_date %} (最終 {{overview.last_material_date}}){% endif %}
+  </p>
+  {% endif %}
+</footer>
+
+{% block extra_scripts %}{% endblock %}
+
+<script>
+// ── Service Worker 登録 ───────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    window._swReg = reg;
+  }).catch(() => {});
+}
+
+// ── Push 通知 ─────────────────────────────────────────────────────
+let _pushSubscribed = false;
+
+async function _getPushPublicKey() {
+  try {
+    const r = await fetch('/push/public-key');
+    const d = await r.json();
+    return d.configured ? d.key : null;
+  } catch { return null; }
+}
+
+function _urlB64ToUint8(b64) {
+  const p = (b64 + '==='.slice((b64.length + 3) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(p);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function initPushUI() {
+  const btn = document.getElementById('bell-btn');
+  if (!btn || !('Notification' in window) || !('serviceWorker' in navigator)) return;
+  const key = await _getPushPublicKey();
+  if (!key) return;  // サーバーにVAPID鍵なし → ベルを表示しない
+  btn.classList.remove('hidden');
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    _pushSubscribed = !!sub;
+    if (_pushSubscribed) btn.classList.add('subscribed');
+  } catch {}
+}
+
+async function togglePushSubscription() {
+  const btn = document.getElementById('bell-btn');
+  if (!btn) return;
+  const key = await _getPushPublicKey();
+  if (!key) return;
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+
+    if (sub) {
+      // 解除
+      const ep = sub.endpoint;
+      await sub.unsubscribe();
+      await fetch('/push/subscribe', {
+        method: 'DELETE', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({endpoint: ep})
+      });
+      _pushSubscribed = false;
+      btn.classList.remove('subscribed');
+      btn.title = '日次更新通知をON';
+    } else {
+      // 購読
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') return;
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _urlB64ToUint8(key)
+      });
+      const j = sub.toJSON();
+      await fetch('/push/subscribe', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({endpoint: j.endpoint, keys: j.keys})
+      });
+      _pushSubscribed = true;
+      btn.classList.add('subscribed');
+      btn.title = '日次更新通知をOFF';
+    }
+  } catch(e) { console.warn('push toggle:', e); }
+}
+
+document.addEventListener('DOMContentLoaded', initPushUI);
+</script>
+</body>
+</html>
+{% macro catchip(c) -%}
+{%- set m={'A':'bg-good/20 text-good','B':'bg-acc/20 text-acc','C':'bg-acc2/20 text-acc2','D':'bg-warn/20 text-warn','E':'bg-slate-600/30 text-slate-400'} -%}
+<span class="chip {{m.get(c,'bg-slate-600/30')}}">{{c}}</span>
+{%- endmacro %}

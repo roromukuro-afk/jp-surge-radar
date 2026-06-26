@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: surge-radar
+    runtime: python
+    region: singapore  # 最寄りの無料リージョン (東京なし)
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m surge_radar.cli serve --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false  # Render ダッシュボードで設定 (Supabase接続文字列)
+      - key: SURGE_ENABLE_LLM
+        value: "0"
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: VAPID_PRIVATE_KEY
+        sync: false  # python scripts/gen_vapid_keys.py で生成
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_ADMIN_EMAIL
+        sync: false

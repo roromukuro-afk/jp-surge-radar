@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}再学習ステータス{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">再学習ステータス / 教師データ分析</h1>
+<p class="text-sm text-slate-400 mb-4">教師データの量・質・失敗パターンと最新モデル性能。</p>
+
+{% set src = teacher.by_source or {} %}
+{% set rc  = teacher.by_result_class or {} %}
+{% set yr  = teacher.by_year or [] %}
+{% set ftags = teacher.fail_tag_counts or {} %}
+
+<!-- seed-teacher 進行中バナー -->
+{% if (teacher._total or 0) < 200 %}
+<div id="seed-status" class="bg-acc/10 border border-acc/40 rounded-xl p-3 mb-4 text-sm">
+  <div class="flex items-center gap-2 flex-wrap">
+    <span class="text-acc font-semibold">⏳ 過去教師データ構築中</span>
+    <span class="text-slate-400">— seed-teacher が歴史的サンプルを収集中 (step=5, max-per-code=40)</span>
+  </div>
+  <div class="text-xs text-slate-500 mt-1">
+    現在: {{ teacher._total or 0 }}件
+    {% if meta %} / 現行モデル学習時: {{ meta.n_samples }}件{% endif %}
+    — 完了後にページ更新 → 再学習ボタンで最新モデルに反映
+  </div>
+  <div class="text-xs text-slate-600 mt-1 font-mono">
+    python -m surge_radar.cli seed-teacher --step 5 --max-per-code 40
+  </div>
+</div>
+{% endif %}
+
+<!-- 教師データ全体サマリー -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+  <div class="card p-3 text-center">
+    <div class="text-2xl font-bold text-acc">{{ teacher._total or 0 }}</div>
+    <div class="text-xs text-slate-400 mt-0.5">総教師データ</div>
+  </div>
+  <div class="card p-3 text-center">
+    <div class="text-2xl font-bold text-good">{{ teacher._pos_total or 0 }}</div>
+    <div class="text-xs text-slate-400 mt-0.5">正例(急騰成功)</div>
+  </div>
+  <div class="card p-3 text-center">
+    <div class="text-2xl font-bold text-warn">{{ (src.get('live_fail') or {}).get('n', 0) }}</div>
+    <div class="text-xs text-slate-400 mt-0.5">live失敗教師</div>
+  </div>
+  <div class="card p-3 text-center">
+    <div class="text-2xl font-bold text-acc2">{{ (src.get('live_success') or {}).get('n', 0) }}</div>
+    <div class="text-xs text-slate-400 mt-0.5">live成功教師</div>
+  </div>
+</div>
+
+<div class="grid md:grid-cols-2 gap-4 mb-4">
+
+  <!-- ソース別内訳 -->
+  <div class="card p-4">
+    <h2 class="font-semibold mb-3 text-sm">ソース別内訳</h2>
+    {% set labels={'historical_pos':'過去急騰(正例)','historical_neg':'過去非急騰(負例)','live_success':'ライブ成功','live_fail':'ライブ失敗'} %}
+    <table class="w-full text-sm">
+      <thead><tr class="text-slate-400 text-xs border-b border-line/50">
+        <th class="py-1 text-left font-normal">ソース</th>
+        <th class="text-right font-normal">件数</th>
+        <th class="text-right font-normal">正例率</th>
+      </tr></thead>
+      <tbody>
+      {% for key in ['historical_pos','historical_neg','live_success','live_fail'] %}
+      {% set info = src.get(key, {'n':0,'pos':0}) %}
+      {% if info.n > 0 %}
+      <tr class="border-t border-line/30">
+        <td class="py-1.5 text-slate-300">{{ labels.get(key, key) }}</td>
+        <td class="text-right font-semibold">{{ info.n }}</td>
+        <td class="text-right text-slate-400 text-xs">
+          {% if info.n > 0 %}{{ '%.0f%%'|format((info.pos / info.n)*100) }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+      <tr class="border-t border-line font-bold">
+        <td class="py-1.5">合計</td>
+        <td class="text-right text-acc">{{ teacher._total or 0 }}</td>
+        <td class="text-right text-slate-400 text-xs">
+          {% if (teacher._total or 0) > 0 %}{{ '%.0f%%'|format(((teacher._pos_total or 0)/(teacher._total))*100) }}{% endif %}
+        </td>
+      </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 最新モデル -->
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-sm">最新モデル</h2>
+      <button id="retrain-btn" onclick="doRetrain()"
+        class="text-xs px-3 py-1 rounded-lg bg-acc/20 text-acc border border-acc/40 hover:bg-acc/30 active:scale-95 transition-all">
+        再学習 ▶
+      </button>
+    </div>
+    <div id="retrain-msg" class="text-xs text-slate-400 mb-2 hidden"></div>
+    {% if meta %}
+    <div class="text-sm space-y-2">
+      <div class="flex justify-between"><span class="text-slate-400">バージョン</span><b>{{meta.version}}</b></div>
+      <div class="flex justify-between"><span class="text-slate-400">学習日時</span><span class="text-xs">{{meta.trained_at}}</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">サンプル数</span><span>{{meta.n_samples}} <span class="text-xs text-slate-500">(正{{meta.n_pos}}/負{{meta.n_neg}})</span></span></div>
+      <div class="flex justify-between items-center">
+        <span class="text-slate-400">CV AUC</span>
+        <b class="{{ 'text-good' if (meta.metrics.get('cv_auc',0) or 0) > 0.75 else ('text-warn' if (meta.metrics.get('cv_auc',0) or 0) > 0.65 else 'text-bad') }} text-lg">
+          {{ meta.metrics.get('cv_auc','—') }}
+        </b>
+      </div>
+      <div class="flex justify-between"><span class="text-slate-400">Train AUC</span><span>{{ meta.metrics.get('train_auc','—') }}</span></div>
+      {% if meta.notes %}<div class="text-xs text-slate-500 mt-1 pt-1 border-t border-line/30">{{meta.notes}}</div>{% endif %}
+    </div>
+    {% else %}
+    <p class="text-sm text-slate-500">モデル未学習。ルールベースで予測中。</p>
+    <p class="text-xs text-acc mt-1"><code>python -m surge_radar.cli train</code> で学習できます</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 結果クラス別分布 (S/A/B/near/fail/danger_fail) -->
+{% if rc %}
+<div class="card p-4 mb-4">
+  <h2 class="font-semibold mb-3 text-sm">過去急騰結果クラス分布 (歴史的教師データ)</h2>
+  {% set rc_total = rc.values()|list|sum %}
+  {% set rc_labels = {'S':'S(5日内+20%)', 'A':'A(10日内+20%)', 'B':'B(20日内+20%)', 'near':'惜しい(+10〜20%)', 'fail':'失敗(<+10%)', 'danger_fail':'危険失敗(大幅下落)'} %}
+  {% set rc_colors = {'S':'#34d399','A':'#22d3ee','B':'#a78bfa','near':'#fbbf24','fail':'#f87171','danger_fail':'#ef4444'} %}
+  <div class="space-y-2">
+  {% for cls in ['S','A','B','near','fail','danger_fail'] %}
+  {% if rc.get(cls, 0) > 0 %}
+  <div>
+    <div class="flex justify-between text-xs mb-0.5">
+      <span class="text-slate-300">{{ rc_labels.get(cls, cls) }}</span>
+      <span>{{ rc[cls] }} <span class="text-slate-500">({{ '%.0f%%'|format(rc[cls]/rc_total*100) }})</span></span>
+    </div>
+    <div class="bar"><i style="width:{{ (rc[cls]/rc_total*100)|round }}%;background:{{ rc_colors.get(cls,'#94a3b8') }}"></i></div>
+  </div>
+  {% endif %}
+  {% endfor %}
+  <div class="text-xs text-slate-500 mt-2">S/A/Bの比率が高いほど教師データの質が高い。正解率(S+A+B)の割合に注目。</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- 年別分布 -->
+{% if yr %}
+<div class="card p-4 mb-4">
+  <h2 class="font-semibold mb-3 text-sm">年別教師データ分布</h2>
+  {% set yr_max = yr|map(attribute='n')|list|max %}
+  <div class="overflow-x-auto">
+  <table class="w-full text-xs min-w-[400px]">
+    <thead><tr class="text-slate-400 border-b border-line/50">
+      <th class="py-1 text-left font-normal">年</th>
+      <th class="text-right font-normal">件数</th>
+      <th class="text-right font-normal">正例</th>
+      <th class="text-right font-normal">急騰率</th>
+      <th class="font-normal pl-3">分布</th>
+    </tr></thead>
+    <tbody>
+    {% for row in yr %}
+    <tr class="border-t border-line/30">
+      <td class="py-1.5 font-semibold">{{ row.year }}</td>
+      <td class="text-right">{{ row.n }}</td>
+      <td class="text-right text-good">{{ row.pos }}</td>
+      <td class="text-right text-slate-300">{{ '%.0f%%'|format(row.pos/row.n*100 if row.n else 0) }}</td>
+      <td class="pl-3"><div class="bar" style="height:6px"><i style="width:{{ (row.n/yr_max*100)|round }}%;background:#a78bfa"></i></div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="text-xs text-slate-500 mt-2">各年の急騰率(正例率)のばらつきが少ないほど、教師データが時代に偏っていない。</div>
+</div>
+{% endif %}
+
+<!-- 失敗タグ分析 -->
+{% if ftags %}
+<div class="card p-4 mb-4">
+  <h2 class="font-semibold mb-3 text-sm">live失敗タグ分析 ({{ (src.get('live_fail') or {}).get('n', 0) }}件の失敗から)</h2>
+  {% set ft_total = ftags.values()|list|sum %}
+  {% set ft_labels = {
+    'quick_fail':'急落失敗(初動で即下落)',
+    'material_fail':'材料消滅(続報なし)',
+    'volume_fail':'出来高天井(大商いで高値形成)',
+    'trend_fail':'トレンド失敗(右肩下がり継続)',
+    'theme_fail':'テーマ不発(資金波及せず)',
+    'market_fail':'地合い悪化',
+    'dilution_fail':'希薄化・GC',
+    'liquidity_fail':'流動性不足',
+    'trap_fail':'高値圏トラップ(上ヒゲ天井)',
+    'near_miss':'惜しい(+10〜20%止まり)'
+  } %}
+  {% set ft_max = ftags.values()|list|max %}
+  <div class="space-y-2">
+  {% for tag, cnt in (ftags.items()|list|sort(attribute=1, reverse=true)) %}
+  <div>
+    <div class="flex justify-between text-xs mb-0.5">
+      <span class="text-slate-300">{{ ft_labels.get(tag, tag) }}</span>
+      <span>{{ cnt }} <span class="text-slate-500">({{ '%.0f%%'|format(cnt/ft_total*100) }})</span></span>
+    </div>
+    <div class="bar"><i style="width:{{ (cnt/ft_max*100)|round }}%;background:#f87171"></i></div>
+  </div>
+  {% endfor %}
+  </div>
+  <div class="text-xs text-slate-500 mt-2">失敗が多いタグは「このパターンを見分けられるか」の課題。再学習で対策される。</div>
+</div>
+{% endif %}
+
+<!-- 特徴量重要度 -->
+{% if meta and meta.feature_importance %}
+<div class="card p-4 mb-4">
+  <h2 class="font-semibold mb-3 text-sm">特徴量重要度 (Top 20)</h2>
+  {% set fi=meta.feature_importance %}
+  {% set fmax = fi.values()|list|max %}
+  {% for k,v in (fi.items()|list)[:20] %}
+  <div class="mb-1.5">
+    <div class="flex justify-between text-xs"><span class="text-slate-300">{{k}}</span><span class="text-slate-400">{{ '%.3f'|format(v) }}</span></div>
+    <div class="bar"><i style="width:{{ (v/fmax*100)|round if fmax else 0 }}%;background:#a78bfa"></i></div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- 学習ループ説明 -->
+<div class="card p-4 text-sm text-slate-400">
+  <h2 class="font-semibold mb-2 text-slate-200">AI自動学習ループ</h2>
+  <div class="space-y-1 text-xs">
+    <div>① 毎日 <b class="text-slate-300">全3,572銘柄を評価</b> → AIランキング生成</div>
+    <div>② 上位候補を <b class="text-slate-300">20営業日追跡</b> → S/A/B/near/fail/danger_fail 判定</div>
+    <div>③ 失敗予測に <b class="text-slate-300">失敗タグ</b>を付与 → live_fail 教師データに追加</div>
+    <div>④ live_failが増えると <b class="text-slate-300">再学習</b>で騙しパターン検出精度が向上</div>
+    <div class="mt-2 text-slate-500">目標: live_fail 500件以上 → CV AUC 0.80超 → 的中率改善</div>
+    <div class="text-slate-500">現在: live_fail {{ (src.get('live_fail') or {}).get('n', 0) }}件 / 目標500件</div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+async function doRetrain() {
+  const btn = document.getElementById('retrain-btn');
+  const msg = document.getElementById('retrain-msg');
+  btn.disabled = true;
+  btn.textContent = '学習中...';
+  msg.textContent = '⏳ モデルを再学習中 (数十秒かかります)...';
+  msg.className = 'text-xs text-acc mb-2';
+  try {
+    const res = await fetch('/api/retrain', {method:'POST'});
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = `✅ 完了 ${d.version} — CV AUC: ${d.cv_auc ?? '—'} / サンプル${d.n_samples}件`;
+      msg.className = 'text-xs text-good mb-2';
+      setTimeout(() => window.location.reload(), 2000);
+    } else if (d.warn) {
+      msg.textContent = `⚠️ ${d.error}`;
+      msg.className = 'text-xs text-warn mb-2';
+      btn.disabled = false;
+      btn.textContent = '再学習 ▶';
+    } else {
+      msg.textContent = `❌ エラー: ${d.error}`;
+      msg.className = 'text-xs text-bad mb-2';
+      btn.disabled = false;
+      btn.textContent = '再学習 ▶';
+    }
+  } catch(e) {
+    msg.textContent = `❌ 通信エラー: ${e.message}`;
+    msg.className = 'text-xs text-bad mb-2';
+    btn.disabled = false;
+    btn.textContent = '再学習 ▶';
+  }
+}
+</script>
+{% endblock %}

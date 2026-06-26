@@ -1,0 +1,61 @@
+{# サーバーレンダリングのSVGローソク足+出来高+MA線+T0マーカー #}
+{# chart_meta はバックエンドで計算済み (queries._chart_meta) #}
+{% set ps = p.prices %}
+{% set cm = p.chart_meta %}
+{% if ps and ps|length > 1 and cm %}
+  {% set W = cm.W %}{% set PH = cm.PH %}{% set VH = cm.VH %}{% set pad = cm.pad %}
+  {% set hi = cm.hi %}{% set lo = cm.lo %}{% set rng = cm.rng %}{% set step = cm.step %}
+
+  <div class="overflow-x-auto">
+  <svg viewBox="0 0 {{ W }} {{ PH + VH + 8 }}" width="100%" height="280" preserveAspectRatio="none" style="min-width:{{ W }}px">
+    {# 価格補助線 #}
+    {% for frac in [0, 0.25, 0.5, 0.75, 1] %}
+      {% set gy = pad + frac * (PH - 2*pad) %}
+      <line x1="0" y1="{{ gy }}" x2="{{ W }}" y2="{{ gy }}" stroke="#26344a" stroke-width="0.5"{% if frac > 0 and frac < 1 %} stroke-dasharray="3,3"{% endif %}/>
+    {% endfor %}
+
+    {# T0 縦線 #}
+    {% if cm.t0_x %}
+      <line x1="{{ cm.t0_x }}" y1="0" x2="{{ cm.t0_x }}" y2="{{ PH + VH + 8 }}" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.5"/>
+      <text x="{{ cm.t0_x + 2 }}" y="12" font-size="7" fill="#22d3ee" opacity="0.8">T0</text>
+    {% endif %}
+
+    {# ローソク足 + 出来高バー #}
+    {% set vmax = ps|map(attribute='volume')|select|max %}
+    {% for b in ps %}
+      {% set x = loop.index0 * step + step/2 %}
+      {% set yh = pad + (1 - (b.high - lo)/rng) * (PH - 2*pad) %}
+      {% set yl = pad + (1 - (b.low  - lo)/rng) * (PH - 2*pad) %}
+      {% set yo = pad + (1 - (b.open  - lo)/rng) * (PH - 2*pad) %}
+      {% set yc = pad + (1 - (b.close - lo)/rng) * (PH - 2*pad) %}
+      {% set up = b.close >= b.open %}
+      {% set col = '#34d399' if up else '#f87171' %}
+      <line x1="{{ x }}" y1="{{ yh }}" x2="{{ x }}" y2="{{ yl }}" stroke="{{ col }}" stroke-width="0.8"/>
+      <rect x="{{ x - step*0.32 }}" y="{{ yc if up else yo }}" width="{{ step*0.64 }}"
+            height="{{ (yo-yc)|abs if (yo-yc)|abs > 0.6 else 0.8 }}" fill="{{ col }}"/>
+      {% if vmax %}
+        {% set vh = (b.volume / vmax) * VH %}
+        <rect x="{{ x - step*0.32 }}" y="{{ PH + 8 + (VH - vh) }}" width="{{ step*0.64 }}" height="{{ vh }}" fill="{{ col }}" opacity="0.4"/>
+      {% endif %}
+    {% endfor %}
+
+    {# MA折れ線 (バックエンド計算済みポイント文字列) #}
+    {% if cm.ma5_pts  %}<polyline points="{{ cm.ma5_pts  }}" fill="none" stroke="#fbbf24" stroke-width="1.0" opacity="0.75"/>{% endif %}
+    {% if cm.ma25_pts %}<polyline points="{{ cm.ma25_pts }}" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity="0.85"/>{% endif %}
+    {% if cm.ma75_pts %}<polyline points="{{ cm.ma75_pts }}" fill="none" stroke="#a78bfa" stroke-width="1.2" opacity="0.75"/>{% endif %}
+  </svg>
+  </div>
+
+  <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
+    <span>{{ ps[0].date }}</span>
+    <div class="flex gap-3">
+      {% if cm.ma5_pts  %}<span class="text-warn">━ MA5</span>{% endif %}
+      {% if cm.ma25_pts %}<span class="text-acc">━ MA25</span>{% endif %}
+      {% if cm.ma75_pts %}<span class="text-acc2">━ MA75</span>{% endif %}
+      {% if cm.t0_x %}<span class="text-acc opacity-60">┆ T0</span>{% endif %}
+    </div>
+    <span>{{ ps[-1].date }}  H:¥{{ '{:,.0f}'.format(hi) }} L:¥{{ '{:,.0f}'.format(lo) }}</span>
+  </div>
+{% else %}
+  <p class="text-sm text-slate-500">価格データが不足しています。</p>
+{% endif %}

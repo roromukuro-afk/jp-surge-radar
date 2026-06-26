@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}実行ログ{% endblock %}
+{% block content %}
+<h1 class="text-xl md:text-2xl font-bold mb-1">自動実行ログ / エラーログ</h1>
+<p class="text-xs md:text-sm text-slate-400 mb-4">日次パイプライン各ステップの実行結果。エラーはここに記録されます。</p>
+
+{% if not rows %}
+<div class="card p-8 text-center text-slate-400">実行ログがありません。</div>
+{% else %}
+
+<!-- モバイル: カード表示 -->
+<div class="grid gap-2 md:hidden">
+  {% for r in rows %}
+  <div class="card p-3 {{ 'border-acc/30 bg-acc/5' if r.job=='daily_pipeline' else '' }}">
+    <div class="flex items-center gap-2 mb-1">
+      <span class="font-semibold text-sm {{ 'text-acc' if r.job=='daily_pipeline' else '' }}">{{r.job}}</span>
+      <span class="chip {{ 'bg-good/20 text-good' if r.status=='ok' else ('bg-warn/20 text-warn' if r.status in ['running','partial'] else 'bg-bad/20 text-bad') }} ml-auto">{{r.status}}</span>
+    </div>
+    <div class="text-xs text-slate-400">{{r.started_at}}{% if r.finished_at %} → {{r.finished_at}}{% endif %}</div>
+    {% if r.status=='error' %}
+    <pre class="text-bad text-xs whitespace-pre-wrap max-h-28 overflow-auto mt-1.5 bg-panel2 p-2 rounded-lg">{{ r.message }}</pre>
+    {% elif r.counts %}
+    <div class="text-xs text-slate-300 mt-1.5">
+      {% for k,v in r.counts.items() %}<span class="mr-2">{{k}}: {{v}}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<!-- デスクトップ: テーブル -->
+<div class="card overflow-x-auto hidden md:block">
+<table class="w-full text-sm">
+  <thead><tr class="text-slate-400 text-left text-xs border-b border-line">
+    <th class="p-2">ジョブ</th><th>開始</th><th>終了</th><th>状態</th><th>件数/メッセージ</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr class="border-b border-line/50 align-top {{ 'bg-acc/5 border-t-2 border-t-acc/30' if r.job=='daily_pipeline' else '' }}">
+    <td class="p-2 font-semibold whitespace-nowrap {{ 'text-acc' if r.job=='daily_pipeline' else '' }}">{{r.job}}</td>
+    <td class="whitespace-nowrap text-slate-400 text-xs">{{r.started_at}}</td>
+    <td class="whitespace-nowrap text-slate-400 text-xs">{{r.finished_at or '—'}}</td>
+    <td><span class="chip {{ 'bg-good/20 text-good' if r.status=='ok' else ('bg-warn/20 text-warn' if r.status in ['running','partial'] else 'bg-bad/20 text-bad') }}">{{r.status}}</span></td>
+    <td class="text-xs text-slate-300 max-w-xs">
+      {% if r.status=='error' %}<pre class="text-bad whitespace-pre-wrap max-h-32 overflow-auto">{{ r.message }}</pre>
+      {% elif r.job=='train' and r.counts.get('skipped') %}
+        <span class="text-warn">スキップ: {{ r.counts.get('reason','—') }}</span>
+      {% elif r.job=='predict' and r.counts.get('categories') %}
+        {% set cats=r.counts.categories %}
+        {% if cats.get('B') %}<span class="text-acc mr-1">B:{{cats.B}}</span>{% endif %}
+        {% if cats.get('C') %}<span class="text-acc2 mr-1">C:{{cats.C}}</span>{% endif %}
+        {% if cats.get('D') %}<span class="text-warn mr-1">D:{{cats.D}}</span>{% endif %}
+        <span class="text-slate-500 ml-1">評価{{r.counts.get('evaluated','?')}}件</span>
+      {% elif r.job=='daily_pipeline' and r.counts.get('predict') %}
+        {% set cats=r.counts.predict.get('categories',{}) %}
+        {% if cats.get('B') %}<span class="text-acc mr-1">B:{{cats.B}}</span>{% endif %}
+        {% if cats.get('C') %}<span class="text-acc2 mr-1">C:{{cats.C}}</span>{% endif %}
+        {% if cats.get('D') %}<span class="text-warn mr-1">D:{{cats.D}}</span>{% endif %}
+        {% if r.counts.get('retrain_skipped') %}<span class="text-slate-500 ml-1">再学習スキップ</span>{% endif %}
+      {% else %}
+        {% for k,v in r.counts.items() %}<span class="mr-2">{{k}}: {{v}}</span>{% endfor %}
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

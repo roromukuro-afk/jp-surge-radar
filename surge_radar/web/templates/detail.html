@@ -1,0 +1,471 @@
+{% extends "base.html" %}
+{% block title %}{{p.name or p.code}} 詳細{% endblock %}
+{% set f=p.features %}
+{% block content %}
+
+<a href="/" class="text-sm text-slate-400 hover:text-acc no-underline">← ランキングに戻る</a>
+
+<!-- 銘柄ヘッダ -->
+<div class="flex items-start gap-3 flex-wrap mt-2 mb-4">
+  <div class="flex-1 min-w-0">
+    <div class="flex flex-wrap items-center gap-2">
+      <h1 class="text-xl md:text-2xl font-bold">{{p.name or p.code}}</h1>
+      <span class="text-slate-500 text-sm">{{p.code}}</span>
+      <span class="chip bg-acc/20 text-acc border border-acc/40">{{p.category}} {{cat_labels.get(p.category,'')}}</span>
+      {% if p.origin == 'live' %}
+      <span class="chip bg-good/20 text-good border border-good/40">実運用</span>
+      {% else %}
+      <span class="chip bg-warn/20 text-warn border border-warn/40">backfill</span>
+      {% endif %}
+    </div>
+    <div class="text-xs text-slate-400 mt-1">予測日 {{p.run_date}} ・ モデル {{p.model_version}}</div>
+  </div>
+  <div class="text-right shrink-0">
+    <div class="text-3xl font-bold text-acc">{{ '%.0f'|format(p.score*100) }}</div>
+    <div class="text-xs text-slate-400">¥{{ '{:,.0f}'.format(p.base_price) }}</div>
+  </div>
+</div>
+
+<!-- チャート -->
+<div class="card p-3 md:p-4 mb-3">
+  <h2 class="font-semibold mb-2 text-sm md:text-base">チャート / 出来高 (直近{{p.prices|length}}営業日)</h2>
+  {% include "_chart.html" %}
+
+  <!-- 基本指標 (常時表示) -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1.5 text-xs mt-3 text-slate-300">
+    <div>25日線乖離: <b class="{{ 'text-bad' if (f.dev25 or 0)>0.25 else ('text-good' if (f.dev25 or 0)>0 else 'text-warn') }}">{{ '%+.1f%%'|format((f.dev25 or 0)*100) }}</b></div>
+    <div>RSI14: <b class="{{ 'text-bad' if (f.rsi14 or 50)>75 else ('text-good' if (f.rsi14 or 50)<35 else 'text-slate-300') }}">{{ '%.0f'|format(f.rsi14 or 0) }}</b></div>
+    <div>出来高急増: <b class="{{ 'text-good' if (f.vol_spike or 0)>2 else 'text-slate-300' }}">{{ '%.1f'|format(f.vol_spike or 0) }}倍</b></div>
+    <div>52週高値比: <b>{{ '%.0f%%'|format((f.pct_from_52w_high or 0)*100) }}</b></div>
+    <div>抵抗線まで: <b>{{ '%.1f%%'|format((f.dist_to_resistance or 0)*100) }}</b></div>
+    <div>支持線まで: <b>{{ '%.1f%%'|format((f.dist_to_support or 0)*100) }}</b></div>
+    <div>平均売買代金: <b>10^{{ '%.1f'|format(f.turnover_log or 0) }}円</b></div>
+    <div>上値余地: <b>{{ '%.0f'|format((p.flags.upside or 0)*100) }}</b></div>
+  </div>
+
+  <!-- チャート詳細分析 -->
+  <details class="mt-3">
+    <summary class="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 select-none cursor-pointer">
+      <i class="arr">▶</i> チャート詳細 (移動平均/シグナル/リスク)
+    </summary>
+    <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+      <!-- 移動平均線の状態 -->
+      <div class="bg-panel2 rounded-lg p-2.5">
+        <div class="text-slate-400 font-semibold mb-1.5">移動平均線</div>
+        <div class="space-y-1">
+          <div class="flex justify-between"><span>5日線の上</span><span class="{{ 'text-good' if f.price_above_ma5 else 'text-bad' }}">{{ 'YES' if f.price_above_ma5 else 'NO' }}</span></div>
+          <div class="flex justify-between"><span>25日線の上</span><span class="{{ 'text-good' if f.price_above_ma25 else 'text-bad' }}">{{ 'YES' if f.price_above_ma25 else 'NO' }}</span></div>
+          <div class="flex justify-between"><span>75日線の上</span><span class="{{ 'text-good' if f.price_above_ma75 else 'text-bad' }}">{{ 'YES' if f.price_above_ma75 else 'NO' }}</span></div>
+          <div class="flex justify-between"><span>25日線乖離</span><span class="{{ 'text-bad' if (f.dev25 or 0)>0.25 else ('text-good' if (f.dev25 or 0)>0 else 'text-warn') }}">{{ '%+.1f%%'|format((f.dev25 or 0)*100) }}</span></div>
+          <div class="flex justify-between"><span>5/25日出来高比</span><span class="{{ 'text-good' if (f.vol_ratio_5_25 or 0)>1.3 else 'text-slate-300' }}">{{ '%.2f'|format(f.vol_ratio_5_25 or 0) }}倍</span></div>
+        </div>
+      </div>
+      <!-- チャートシグナル -->
+      <div class="bg-panel2 rounded-lg p-2.5">
+        <div class="text-slate-400 font-semibold mb-1.5">急騰前夜シグナル</div>
+        <div class="space-y-1">
+          {% macro sig(label, val, thresh=0.3) %}
+          <div class="flex justify-between">
+            <span>{{label}}</span>
+            <span class="{{ 'text-good font-semibold' if val > thresh else 'text-slate-500' }}">
+              {{ 'ON' if val > thresh else 'off' }}{% if val > 0 %}<span class="text-slate-500 text-[10px]"> ({{  '%.2f'|format(val) }})</span>{% endif %}
+            </span>
+          </div>
+          {% endmacro %}
+          {{ sig('下落止まり', f.downtrend_stopped or 0, 0.3) }}
+          {{ sig('ボラ縮小(横ばい化)', f.volatility_contraction or 0, 0.3) }}
+          {{ sig('安値切り上げ', f.higher_lows or 0, 0.1) }}
+          {{ sig('高値切り下げ停止', f.lower_highs_stopped or 0, 0.3) }}
+          {{ sig('ブレイク接近', f.near_breakout or 0, 0.5) }}
+          <div class="flex justify-between"><span>抵抗線突破</span><span class="{{ 'text-good font-semibold' if f.broke_resistance else 'text-slate-500' }}">{{ 'BREAK!' if f.broke_resistance else 'no' }}</span></div>
+          <div class="flex justify-between"><span>抵抗線まで</span><span>{{ '%.1f%%'|format((f.dist_to_resistance or 0)*100) }}</span></div>
+        </div>
+      </div>
+      <!-- リスク要因 -->
+      <div class="bg-panel2 rounded-lg p-2.5">
+        <div class="text-slate-400 font-semibold mb-1.5">リスク要因</div>
+        <div class="space-y-1">
+          {% macro risk(label, val, thresh=0.5) %}
+          <div class="flex justify-between">
+            <span>{{label}}</span>
+            <span class="{{ 'text-bad font-semibold' if val > thresh else 'text-slate-500' }}">{{ 'WARNING' if val > thresh else 'ok' }}</span>
+          </div>
+          {% endmacro %}
+          {{ risk('右肩下がり継続', f.downtrend_risk or 0) }}
+          {{ risk('戻り売り圏', f.rebound_capped or 0) }}
+          {{ risk('高値圏上ヒゲ', f.high_zone_upper_wick or 0) }}
+          {{ risk('天井大商い', f.volume_top_risk or 0) }}
+          {{ risk('人気離散', f.popularity_loss or 0) }}
+          <div class="flex justify-between"><span>RSI14</span><span class="{{ 'text-bad' if (f.rsi14 or 50)>75 else ('text-good' if (f.rsi14 or 50)<35 else 'text-slate-300') }}">{{ '%.0f'|format(f.rsi14 or 50) }}</span></div>
+          <div class="flex justify-between"><span>52週高値比</span><span>{{ '%.0f%%'|format((f.pct_from_52w_high or 0)*100) }}</span></div>
+        </div>
+      </div>
+      <!-- 出来高サイクル詳細 -->
+      <div class="bg-panel2 rounded-lg p-2.5">
+        <div class="text-slate-400 font-semibold mb-1.5">出来高サイクル</div>
+        <div class="space-y-1">
+          <div class="flex justify-between"><span>出来高急増比</span><span class="{{ 'text-good font-semibold' if (f.vol_spike or 0)>2 else ('text-warn' if (f.vol_spike or 0)>1.4 else 'text-slate-500') }}">{{ '%.1f'|format(f.vol_spike or 0) }}倍</span></div>
+          <div class="flex justify-between"><span>上昇日優位度</span><span class="{{ 'text-good' if (f.up_down_vol_bias or 0)>0 else 'text-bad' }}">{{ '%+.2f'|format(f.up_down_vol_bias or 0) }}</span></div>
+          <div class="flex justify-between"><span>急増後値持ち</span><span class="{{ 'text-good' if (f.held_after_vol_spike or 0)>0 else 'text-slate-500' }}">{{ '%.2f'|format(f.held_after_vol_spike or 0) }}</span></div>
+          <div class="flex justify-between"><span>売り枯れ</span><span class="{{ 'text-acc' if f.dry_up else 'text-slate-500' }}">{{ 'ON' if f.dry_up else 'off' }}</span></div>
+          <div class="flex justify-between"><span>5日/25日出来高比</span><span>{{ '%.2f'|format(f.vol_ratio_5_25 or 0) }}倍</span></div>
+          <div class="flex justify-between"><span>5日騰落率</span><span class="{{ 'text-good' if (f.price_change_5d or 0)>0 else 'text-bad' }}">{{ '%+.1f%%'|format((f.price_change_5d or 0)*100) }}</span></div>
+        </div>
+      </div>
+    </div>
+  </details>
+</div>
+
+<!-- チャートAI解説 -->
+<div class="card p-3 md:p-4 mb-3">
+  <h2 class="font-semibold mb-3 text-sm md:text-base flex items-center gap-2">
+    <span class="text-acc">🤖</span> チャートAI解説
+  </h2>
+
+  {% set res_price = p.base_price * (1 + (f.dist_to_resistance or 0)) %}
+  {% set sup_price = p.base_price * (1 - (f.dist_to_support or 0)) %}
+
+  <div class="grid md:grid-cols-2 gap-3 text-xs">
+
+    <!-- なぜ急騰前夜か -->
+    <div class="bg-good/5 border border-good/20 rounded-lg p-3">
+      <div class="text-good font-semibold mb-2">✅ なぜ急騰前夜か</div>
+      <ul class="space-y-1.5 text-slate-300">
+        {% if f.broke_resistance %}
+        <li>・<b>抵抗線を突破</b> — ブレイクアウト済み。上昇モメンタム継続中</li>
+        {% endif %}
+        {% if (f.near_breakout or 0) > 0.5 %}
+        <li>・抵抗線まで <b>{{ '%.1f%%'|format((f.dist_to_resistance or 0)*100) }}</b> — ブレイク直前の圧縮状態</li>
+        {% endif %}
+        {% if (f.volatility_contraction or 0) > 0.3 %}
+        <li>・<b>ボラティリティが縮小</b> — エネルギーが蓄積中。爆発前の静けさ</li>
+        {% endif %}
+        {% if (f.higher_lows or 0) > 0.1 %}
+        <li>・<b>安値切り上げ</b>継続中 — 底値支持が強まっており上昇転換シグナル</li>
+        {% endif %}
+        {% if (f.downtrend_stopped or 0) > 0.3 %}
+        <li>・<b>下落トレンドが停止</b> — 売り圧力が枯れ始めている</li>
+        {% endif %}
+        {% if f.dry_up %}
+        <li>・<b>売り枯れ状態</b> — 出来高が干上がり次の材料・需給で急騰しやすい</li>
+        {% endif %}
+        {% if (f.vol_spike or 0) > 2 and (f.up_down_vol_bias or 0) > 0 %}
+        <li>・<b>出来高急増(平均{{ '%.1f'|format(f.vol_spike) }}倍)</b>を上昇日に確認 — 買い主導の初動シグナル</li>
+        {% elif (f.vol_spike or 0) > 1.4 and (f.up_down_vol_bias or 0) > 0 %}
+        <li>・出来高がやや増加({{ '%.1f'|format(f.vol_spike) }}倍)で上昇日優位 — 需給改善の芽あり</li>
+        {% endif %}
+        {% if (f.held_after_vol_spike or 0) > 0.05 %}
+        <li>・出来高急増後に<b>価格を維持</b> — 売り圧力を吸収している</li>
+        {% endif %}
+        {% if f.has_fresh_material %}
+        <li>・<b>新鮮な開示材料あり</b>(本日/直近) — 材料が出て間もなく未織り込み期待</li>
+        {% endif %}
+        {% if (f.lower_highs_stopped or 0) > 0.3 %}
+        <li>・高値切り下げが<b>停止</b> — 上値抵抗が弱まっている</li>
+        {% endif %}
+        {% if f.price_above_ma25 and (f.ma25_slope or 0) > 0 %}
+        <li>・25日線が<b>上向き</b>かつその上に位置 — トレンドフォロー有利</li>
+        {% endif %}
+        {% if (f.rsi14 or 50) < 35 %}
+        <li>・RSI {{ '%.0f'|format(f.rsi14) }} — 売られすぎ水準からの<b>反発狙い</b>が入りやすい</li>
+        {% endif %}
+        {% if not f.broke_resistance and not (f.near_breakout or 0) > 0.5 and not f.dry_up
+              and not (f.higher_lows or 0) > 0.1 and not (f.vol_spike or 0) > 1.4 %}
+        <li class="text-slate-500">・チャート単体では明確な急騰前夜シグナルは弱め。材料/ML確率で評価中</li>
+        {% endif %}
+      </ul>
+    </div>
+
+    <!-- なぜ注意が必要か -->
+    <div class="bg-bad/5 border border-bad/20 rounded-lg p-3">
+      <div class="text-bad font-semibold mb-2">⚠️ なぜ注意が必要か</div>
+      <ul class="space-y-1.5 text-slate-300">
+        {% if (f.downtrend_risk or 0) >= 0.5 %}
+        <li>・<b>右肩下がりトレンド継続</b> — 戻り売り圧力が強く逆張りリスクあり</li>
+        {% endif %}
+        {% if f.rebound_capped %}
+        <li>・<b>戻り売り圏</b> — 過去下落ポイントが頭を押さえる可能性</li>
+        {% endif %}
+        {% if f.high_zone_upper_wick %}
+        <li>・<b>高値圏で上ヒゲ</b> — 天井形成の典型パターン、上昇しても売られやすい</li>
+        {% endif %}
+        {% if f.volume_top_risk %}
+        <li>・<b>天井大商い</b> — 高値圏での出来高急増は天井売りのシグナル</li>
+        {% endif %}
+        {% if (f.rsi14 or 50) > 75 %}
+        <li>・<b>RSI {{ '%.0f'|format(f.rsi14) }}</b> — 短期過熱域、調整・押し目入りの可能性</li>
+        {% endif %}
+        {% if (f.dev25 or 0) > 0.25 %}
+        <li>・<b>25日線から{{ '%.0f%%'|format((f.dev25 or 0)*100) }}乖離</b> — 買われすぎ水準で利確売り圧力</li>
+        {% endif %}
+        {% if f.popularity_loss %}
+        <li>・<b>人気離散</b> — 出来高が継続的に減少しており需給が悪化中</li>
+        {% endif %}
+        {% if f.dilution_flag %}
+        <li>・<b>増資・希薄化リスク</b> — 株価希薄化要因あり、要注意</li>
+        {% endif %}
+        {% if f.going_concern_flag %}
+        <li>・<b>継続企業の疑義(GC)</b> — 経営リスクが高く投機的要素が強い</li>
+        {% endif %}
+        {% if (f.pct_from_52w_high or 0) > -0.05 %}
+        <li>・<b>52週高値圏</b>(高値比{{ '%.0f%%'|format((f.pct_from_52w_high or 0)*100) }}) — 高値づかみリスク</li>
+        {% endif %}
+        {% if not (f.downtrend_risk or 0) >= 0.5 and not f.high_zone_upper_wick
+              and not f.volume_top_risk and not (f.rsi14 or 50) > 75
+              and not (f.dev25 or 0) > 0.25 and not f.popularity_loss %}
+        <li class="text-slate-500">・現時点で明確な危険シグナルは少ない。ただし相場急変・材料消滅には注意</li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- 価格の注目ポイント -->
+  <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+    <div class="bg-acc/5 border border-acc/20 rounded-lg p-3">
+      <div class="text-acc font-semibold mb-2">📈 ここを超えたら強い</div>
+      <ul class="space-y-1.5 text-slate-300">
+        {% if (f.dist_to_resistance or 0) > 0 %}
+        <li>・<b>¥{{ '{:,.0f}'.format(res_price) }}</b> — 抵抗線(現値から+{{ '%.1f%%'|format((f.dist_to_resistance or 0)*100) }})</li>
+        {% endif %}
+        {% if not f.price_above_ma75 %}
+        <li>・75日移動平均を上回る — 中期トレンド転換の確認</li>
+        {% endif %}
+        {% if not f.price_above_ma25 %}
+        <li>・25日移動平均(現値から+{{ '%.1f%%'|format((f.dev25 or 0)*-100) }})を回復 — 短期トレンド転換</li>
+        {% endif %}
+        {% if (f.near_breakout or 0) > 0.3 and not f.broke_resistance %}
+        <li>・抵抗線突破後の<b>出来高増加確認</b>でモメンタム本格化</li>
+        {% endif %}
+        <li class="text-slate-500">・+20%目標: ¥{{ '{:,.0f}'.format(p.base_price * 1.20) }}</li>
+      </ul>
+    </div>
+    <div class="bg-bad/5 border border-bad/20 rounded-lg p-3">
+      <div class="text-bad font-semibold mb-2">📉 ここを割ったら撤退</div>
+      <ul class="space-y-1.5 text-slate-300">
+        {% if (f.dist_to_support or 0) > 0 %}
+        <li>・<b>¥{{ '{:,.0f}'.format(sup_price) }}</b> — 支持線を割り込む(現値から-{{ '%.1f%%'|format((f.dist_to_support or 0)*100) }})</li>
+        {% endif %}
+        {% if f.price_above_ma25 %}
+        <li>・25日移動平均を明確に下割れ → trend_fail シグナル</li>
+        {% endif %}
+        {% if f.price_above_ma5 %}
+        <li>・5日移動平均を2日連続で下割れ → 短期勢いの喪失</li>
+        {% endif %}
+        <li>・予測時終値(¥{{ '{:,.0f}'.format(p.base_price) }})を5%超えて下回る → quick_fail</li>
+        {% set _sl = (f.dist_to_support or 0.05) %}{% set _sl = _sl if _sl < 0.10 else 0.10 %}
+        <li class="text-slate-500">・損切り目安: -{{ '%.0f%%'|format(_sl*100) }}(-¥{{ '{:,.0f}'.format(p.base_price * _sl) }})</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- サブスコア -->
+<details class="card p-3 md:p-4 mb-3" open>
+  <summary class="font-semibold text-sm md:text-base flex items-center gap-2 select-none">
+    <i class="arr text-slate-400">▶</i> 総合評価の内訳
+  </summary>
+  <div class="mt-3 space-y-2">
+    {% set subs=[('材料',p.material_score,'#34d399'),('チャート構造',p.chart_score,'#22d3ee'),('出来高サイクル',p.volume_score,'#a78bfa'),('テーマ地合い',p.theme_score,'#fbbf24'),('過去類似度',p.similarity_score,'#67e8f9'),('ファンダ',p.fundamental_score,'#94a3b8'),('AI急騰確率',p.probability,'#f472b6')] %}
+    {% for label,val,col in subs %}
+    <div>
+      <div class="flex justify-between text-sm mb-0.5"><span>{{label}}</span><span class="font-semibold">{{ '%.0f'|format((val or 0)*100) }}</span></div>
+      <div class="bar"><i style="width:{{ ((val or 0)*100)|round }}%;background:{{col}}"></i></div>
+    </div>
+    {% endfor %}
+    <div class="text-xs text-slate-500 mt-1">主ドライバー: {{ p.flags.top_driver }}</div>
+    {% if p.flags.classify_path %}<div class="text-xs text-slate-500 mt-0.5">分類パス: <code class="bg-panel2 px-1 rounded text-acc2">{{p.flags.classify_path}}</code></div>{% endif %}
+    {% if p.flags.themes %}<div class="text-xs mt-0.5">テーマ: {{ p.flags.themes|join(', ') }}</div>{% endif %}
+    {% if p.flags.gates %}<div class="text-xs text-bad mt-0.5">除外ゲート: {{ p.flags.gates|join(', ') }}</div>{% endif %}
+  </div>
+</details>
+
+<!-- 予測理由 / 失敗条件 -->
+<div class="grid md:grid-cols-2 gap-3 mb-3">
+  <div class="card p-3 md:p-4">
+    <h2 class="font-semibold mb-2 text-good text-sm md:text-base">予測理由</h2>
+    <ul class="text-sm space-y-1.5 text-slate-300">
+      {% for r in p.reasons %}<li class="flex gap-1.5"><span class="text-good shrink-0">✔</span><span>{{r}}</span></li>{% endfor %}
+    </ul>
+  </div>
+  <div class="card p-3 md:p-4">
+    <h2 class="font-semibold mb-2 text-warn text-sm md:text-base">失敗条件 (これが崩れたら撤退)</h2>
+    <ul class="text-sm space-y-1.5 text-slate-300">
+      {% for r in p.failure_conditions %}<li class="flex gap-1.5"><span class="text-warn shrink-0">⚠</span><span>{{r}}</span></li>{% endfor %}
+    </ul>
+  </div>
+</div>
+
+<!-- 出来高詳細分析 -->
+<details class="card p-3 md:p-4 mb-3">
+  <summary class="font-semibold text-sm md:text-base flex items-center gap-2 select-none">
+    <i class="arr text-slate-400">▶</i> 出来高詳細分析
+  </summary>
+  <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+
+    <!-- 出来高モメンタム -->
+    <div class="bg-panel2 rounded-lg p-2.5">
+      <div class="text-acc2 font-semibold mb-2">📊 出来高モメンタム</div>
+      <div class="space-y-1.5">
+        <div class="flex justify-between">
+          <span class="text-slate-400">急増比(5日/過去)</span>
+          <span class="{{ 'text-good font-bold' if (f.vol_spike or 0)>3 else ('text-good' if (f.vol_spike or 0)>2 else ('text-warn' if (f.vol_spike or 0)>1.4 else 'text-slate-400')) }}">
+            {{ '%.2f'|format(f.vol_spike or 0) }}倍
+          </span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">5日/25日出来高比</span>
+          <span class="{{ 'text-good' if (f.vol_ratio_5_25 or 0)>1.3 else 'text-slate-400' }}">{{ '%.2f'|format(f.vol_ratio_5_25 or 0) }}倍</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">上昇日集中度</span>
+          <span class="{{ 'text-good' if (f.up_down_vol_bias or 0)>0.2 else ('text-bad' if (f.up_down_vol_bias or 0)<-0.2 else 'text-slate-400') }}">
+            {{ '%+.3f'|format(f.up_down_vol_bias or 0) }}
+          </span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">急増後値持ち</span>
+          <span class="{{ 'text-good' if (f.held_after_vol_spike or 0)>0.05 else ('text-bad' if (f.held_after_vol_spike or 0)<-0.05 else 'text-slate-400') }}">
+            {{ '%+.3f'|format(f.held_after_vol_spike or 0) }}
+          </span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">売り枯れ</span>
+          <span class="{{ 'text-acc font-semibold' if f.dry_up else 'text-slate-500' }}">{{ '売り枯れON ✓' if f.dry_up else 'off' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 出来高質的分析 -->
+    <div class="bg-panel2 rounded-lg p-2.5">
+      <div class="text-acc2 font-semibold mb-2">🔍 出来高の質</div>
+      <div class="space-y-1.5">
+        <div class="flex justify-between">
+          <span class="text-slate-400">流動性OK</span>
+          <span class="{{ 'text-good' if f.liquidity_ok else 'text-bad' }}">{{ '✓' if f.liquidity_ok else '✗ 流動性不足' }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">平均売買代金</span>
+          <span>10^{{ '%.2f'|format(f.turnover_log or 0) }}円</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">天井大商い</span>
+          <span class="{{ 'text-bad font-semibold' if f.volume_top_risk else 'text-good' }}">{{ '⚠ 危険' if f.volume_top_risk else '問題なし' }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">人気離散</span>
+          <span class="{{ 'text-bad font-semibold' if f.popularity_loss else 'text-slate-500' }}">{{ '⚠ 離散中' if f.popularity_loss else 'なし' }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-400">5日騰落率</span>
+          <span class="{{ 'text-good' if (f.price_change_5d or 0)>0 else 'text-bad' }}">{{ '%+.1f%%'|format((f.price_change_5d or 0)*100) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 出来高解釈 -->
+    <div class="bg-panel2 rounded-lg p-2.5">
+      <div class="text-acc2 font-semibold mb-2">💡 出来高解釈</div>
+      <div class="space-y-1.5 text-slate-300 text-[11px] leading-relaxed">
+        {% if f.dry_up %}
+        <p>売り枯れ状態。出来高が干上がり価格が下がらない — 買い手が需給を吸収済み。<b>次の材料で出来高が戻ると急騰しやすい。</b></p>
+        {% elif (f.vol_spike or 0) > 2.5 and (f.up_down_vol_bias or 0) > 0.2 %}
+        <p>大幅な出来高急増を上昇日に確認。<b>買い主導の初動</b>が始まっている可能性。急増後の値持ちが継続するか確認が重要。</p>
+        {% elif (f.vol_spike or 0) > 2.5 and f.volume_top_risk %}
+        <p><b class="text-bad">高値圏での天井大商い。</b>下落転換の典型パターン。出来高急増を高値で伴うのは利確売りの可能性が高い。</p>
+        {% elif (f.vol_spike or 0) > 1.5 and (f.held_after_vol_spike or 0) > 0 %}
+        <p>出来高が増加し、その後価格が維持されている。<b>底値固めが進行中</b>の可能性あり。</p>
+        {% elif f.popularity_loss %}
+        <p><b class="text-bad">人気離散パターン。</b>出来高が持続的に減少し価格も下落。需給の悪化が継続しており、逆張りには注意が必要。</p>
+        {% else %}
+        <p class="text-slate-500">出来高は平均的。明確な急増/売り枯れシグナルなし。材料発生時の出来高反応に注目。</p>
+        {% endif %}
+        {% if (f.up_down_vol_bias or 0) > 0.1 %}
+        <p class="text-slate-400 mt-1">上昇日に出来高が集中しており、買い優位の需給環境。</p>
+        {% elif (f.up_down_vol_bias or 0) < -0.1 %}
+        <p class="text-slate-400 mt-1">下落日に出来高が集中。売り優位の需給環境に注意。</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- 材料 -->
+<details class="card p-3 md:p-4 mb-3" {% if p.materials %}open{% endif %}>
+  <summary class="font-semibold text-sm md:text-base flex items-center gap-2 select-none">
+    <i class="arr text-slate-400">▶</i>
+    材料分析 (直近開示)
+    {% if not p.materials %}<span class="text-xs text-slate-500 font-normal ml-2">登録なし — チャート/出来高反応から間接評価</span>{% endif %}
+  </summary>
+  {% if p.materials %}
+  <div class="overflow-x-auto mt-3">
+  <table class="w-full text-xs md:text-sm min-w-[560px]">
+    <thead><tr class="text-slate-400 text-left border-b border-line text-[11px]">
+      <th class="py-1 pr-2 whitespace-nowrap font-normal">日付</th>
+      <th class="pr-2 whitespace-nowrap font-normal">区分</th>
+      <th class="pr-2 font-normal">見出し</th>
+      <th class="text-right pr-2 whitespace-nowrap font-normal">影響</th>
+      <th class="text-right whitespace-nowrap font-normal">持続</th>
+    </tr></thead>
+    <tbody>
+    {% for m in p.materials %}
+    <tr class="border-t border-line/50">
+      <td class="py-1.5 pr-2 whitespace-nowrap text-slate-400 text-[11px]">{{m.date}}</td>
+      <td class="pr-2 whitespace-nowrap">
+        {% if m.category %}
+        <span class="chip text-[10px] {{ 'bg-good/20 text-good' if (m.sentiment or 0)>0 else ('bg-bad/20 text-bad' if (m.sentiment or 0)<0 else 'bg-slate-600/30') }}">{{m.category}}</span>
+        {% endif %}
+      </td>
+      <td class="pr-2">{% if m.url %}<a href="{{m.url}}" target="_blank" rel="noopener" class="hover:underline text-slate-200">{{m.title}}</a>{% else %}<span class="text-slate-200">{{m.title}}</span>{% endif %}</td>
+      <td class="text-right pr-2 whitespace-nowrap">
+        <span class="{{ 'text-good font-bold' if (m.impact or 0)>0.7 else ('text-good' if (m.impact or 0)>0.5 else ('text-warn' if (m.impact or 0)>0.3 else 'text-slate-400')) }}">
+          {{ '%.2f'|format(m.impact or 0) }}
+        </span>
+      </td>
+      <td class="text-right whitespace-nowrap">
+        <span class="{{ 'text-acc2' if (m.persistence or 0)>0.6 else ('text-slate-400' if (m.persistence or 0)>0.3 else 'text-slate-500') }}">
+          {{ '%.1f'|format((m.persistence or 0)*100) }}%
+        </span>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="text-[10px] text-slate-600 mt-1.5">影響=株価インパクト(0-1) / 持続=材料効果の継続性(%)</div>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-500 mt-2">この銘柄の登録済み開示はありません。</p>
+  {% endif %}
+</details>
+
+<!-- 成否判定 -->
+{% if p.outcome %}
+{% set o=p.outcome %}
+<div class="card p-3 md:p-4 mb-3">
+  <h2 class="font-semibold mb-2 text-sm md:text-base">予測後の追跡・成否判定</h2>
+  <div class="flex items-center gap-3 mb-3 flex-wrap">
+    <span class="chip text-sm {{ 'bg-good/20 text-good border border-good/40' if o.result_class in ['S','A','B'] else ('bg-warn/20 text-warn border border-warn/40' if o.result_class=='near' else 'bg-bad/20 text-bad border border-bad/40') }}">
+      {{ result_labels.get(o.result_class, o.result_class) }}
+    </span>
+    <span class="text-sm text-slate-400">{{o.bars_tracked}}営業日追跡</span>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+    <div>5日内最大: <b class="{{ 'text-good' if o.max_up_5d>0 else 'text-bad' }}">{{ '%+.1f%%'|format(o.max_up_5d*100) }}</b></div>
+    <div>10日内最大: <b class="{{ 'text-good' if o.max_up_10d>0 else 'text-bad' }}">{{ '%+.1f%%'|format(o.max_up_10d*100) }}</b></div>
+    <div>20日内最大: <b class="{{ 'text-good' if o.max_up_20d>0 else 'text-bad' }}">{{ '%+.1f%%'|format(o.max_up_20d*100) }}</b></div>
+    <div>最大下落: <b class="text-bad">{{ '%+.1f%%'|format(o.max_drawdown*100) }}</b></div>
+    <div>+20%到達: <b>{{ o.days_to_20pct ~ '営業日' if o.days_to_20pct else '未到達' }}</b></div>
+    <div>終値維持: <b>{{ '○' if o.close_up_maintained else '×' }}</b></div>
+    <div>高値後失速: <b>{{ '○' if o.faded_after_high else '×' }}</b></div>
+    <div>材料継続: <b>{{ '○' if o.material_continued else '×' }}</b></div>
+  </div>
+  {% if o.failure_tags %}<div class="mt-2 text-sm text-bad">失敗タグ: {{ o.failure_tags|join(', ') }}</div>{% endif %}
+  {% if o.next_learning %}<div class="mt-1 text-sm text-acc2">次回学習への反映: {{o.next_learning}}</div>{% endif %}
+</div>
+{% else %}
+<div class="card p-3 md:p-4 mb-3 text-sm text-slate-400">
+  この予測はまだ追跡中です(20営業日後に成否確定)。
+  {% if p.origin == 'live' %}<span class="text-good ml-1">実運用予測 — 結果は的中率ページに反映されます。</span>{% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}AI急騰予測ランキング{% endblock %}
+{% set catcolor={'A':'bg-good/20 text-good border-good/40','B':'bg-acc/20 text-acc border-acc/40','C':'bg-acc2/20 text-acc2 border-acc2/40','D':'bg-warn/20 text-warn border-warn/40','E':'bg-slate-600/20 text-slate-400 border-slate-600/40'} %}
+{% block content %}
+
+<div class="flex items-end justify-between flex-wrap gap-2 mb-3">
+  <div>
+    <h1 class="text-xl md:text-2xl font-bold">AI総合急騰予測ランキング</h1>
+    <p class="text-xs md:text-sm text-slate-400">3000円以下・短期(20営業日)+20%の火種を総合評価</p>
+  </div>
+  <div class="text-right text-sm">
+    <div class="text-xs text-slate-400 mb-1">予測日</div>
+    <form method="get" class="flex gap-2 items-center flex-wrap">
+      <select name="run_date" onchange="this.form.submit()" class="bg-panel2 border border-line rounded-lg px-2 py-1 text-sm">
+        {% for d in run_dates %}<option value="{{d}}" {{'selected' if d==run_date}}>{{d}}</option>{% endfor %}
+      </select>
+      <input type="hidden" name="category" value="{{category}}">
+      <input type="hidden" name="limit" value="{{limit}}">
+    </form>
+    {% if market_score is not none %}
+    <div class="text-xs mt-1">地合い: <span class="font-semibold {{ 'text-good' if market_score>0.1 else ('text-bad' if market_score<-0.1 else 'text-warn') }}">{{ '%.2f'|format(market_score) }}</span></div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 材料ステータスパネル -->
+{% if overview %}
+<details class="card p-3 mb-3 text-xs" open>
+  <summary class="cursor-pointer font-semibold text-slate-300 select-none flex items-center gap-2 mb-2">
+    <span>📊 材料・システム状況</span>
+    {% if overview.last_pipeline %}
+      {% if overview.last_pipeline.status == 'ok' %}
+      <span class="chip bg-good/20 text-good border border-good/30">Pipeline OK</span>
+      {% else %}
+      <span class="chip bg-bad/20 text-bad border border-bad/30">Pipeline ERR</span>
+      {% endif %}
+    {% endif %}
+  </summary>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-400">
+    <div><span class="text-slate-500">対象銘柄</span> <span class="text-white font-semibold ml-1">{{overview.securities}}</span></div>
+    <div><span class="text-slate-500">材料DB総数</span>
+      <span class="{{ 'text-warn' if overview.materials < 200 else 'text-good' }} font-semibold ml-1">{{overview.materials}}</span></div>
+    <div><span class="text-slate-500">本日材料銘柄</span>
+      <span class="{{ 'text-warn' if overview.mat_codes_today < 50 else 'text-good' }} font-semibold ml-1">{{overview.mat_codes_today or 0}}</span></div>
+    <div><span class="text-slate-500">最終材料取得</span>
+      <span class="{{ 'text-warn' if overview.last_material_date and overview.last_material_date < run_date else 'text-slate-300' }} font-semibold ml-1">{{overview.last_material_date or '未取得'}}</span></div>
+    <div><span class="text-slate-500">教師データ</span> <span class="text-white font-semibold ml-1">{{overview.teacher_total or 0}}</span></div>
+    <div><span class="text-slate-500">live_fail</span> <span class="{{ 'text-good' if (overview.live_fail or 0) > 100 else 'text-warn' }} font-semibold ml-1">{{overview.live_fail or 0}}</span></div>
+    <div><span class="text-slate-500">判定済予測</span> <span class="text-white font-semibold ml-1">{{overview.judged}}</span></div>
+    <div><span class="text-slate-500">本日予測</span>
+      <span class="text-white font-semibold ml-1">
+        {% if overview.cat_today %}
+          {% for cat in ['A','B','C','D'] %}{% if overview.cat_today.get(cat) %}{{cat}}:{{overview.cat_today[cat]}} {% endif %}{% endfor %}
+        {% else %}—{% endif %}
+      </span>
+    </div>
+  </div>
+  <!-- 材料ソース別件数 (直近30日) -->
+  {% if overview.mat_by_source %}
+  <div class="mt-2 border-t border-line/50 pt-2">
+    <div class="text-slate-500 mb-1">材料ソース別件数 (直近30日)</div>
+    <div class="flex flex-wrap gap-2">
+      {% for src, cnt in overview.mat_by_source.items() %}
+      <span class="text-xs px-2 py-0.5 rounded bg-panel2 border border-line/50">
+        <span class="{{ 'text-good' if cnt > 100 else ('text-warn' if cnt < 30 else 'text-slate-300') }}">{{cnt}}</span>
+        <span class="text-slate-500 ml-1">{{src}}</span>
+      </span>
+      {% endfor %}
+    </div>
+    {% set total_src = overview.mat_by_source.values()|sum %}
+    {% if total_src < 100 %}
+    <div class="text-warn text-xs mt-1">⚠️ 材料取得量が少ない。TDnet/EDINETへの接続を確認してください。</div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="mt-1 text-warn text-xs">⚠️ 直近30日の材料データなし — 初回セットアップ: <code class="bg-panel2 px-1 rounded">python -m surge_radar.cli materials</code></div>
+  {% endif %}
+  <!-- 最終パイプライン実行 -->
+  {% if overview.last_pipeline %}
+  <div class="mt-2 border-t border-line/50 pt-2 text-slate-500">
+    最終Pipeline実行: {{overview.last_pipeline.started_at or '—'}}
+    {% if overview.last_pipeline.status == 'error' %}
+    <span class="text-bad ml-2">エラー: {{(overview.last_pipeline.message or '')[:100]}}</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</details>
+{% endif %}
+
+<!-- A/B不在の場合の診断 -->
+{% if not cat_summary.get('A') and not cat_summary.get('B') %}
+<details class="card p-3 mb-3 text-xs border-acc/20">
+  <summary class="cursor-pointer font-semibold text-acc/80 select-none">
+    <i class="arr">▶</i> A/B候補なし — 理由診断
+  </summary>
+  <div class="mt-2 space-y-1.5 text-slate-400">
+    {% set top_mat = namespace(v=0) %}{% set top_chart = namespace(v=0) %}{% set top_vol = namespace(v=0) %}{% set top_sim = namespace(v=0) %}
+    {% for r in rows[:20] %}
+      {% if (r.material_score or 0) > top_mat.v %}{% set top_mat.v = r.material_score or 0 %}{% endif %}
+      {% if (r.chart_score or 0) > top_chart.v %}{% set top_chart.v = r.chart_score or 0 %}{% endif %}
+      {% if (r.volume_score or 0) > top_vol.v %}{% set top_vol.v = r.volume_score or 0 %}{% endif %}
+      {% if (r.similarity_score or 0) > top_sim.v %}{% set top_sim.v = r.similarity_score or 0 %}{% endif %}
+    {% endfor %}
+    <div>・最高材料スコア: <span class="{{ 'text-bad' if top_mat.v < 0.3 else 'text-warn' }}">{{(top_mat.v*100)|round|int}}</span>/100
+      {% if top_mat.v < 0.3 %}<span class="text-bad">← 材料不足</span>{% endif %}</div>
+    <div>・最高チャートスコア: <span class="{{ 'text-bad' if top_chart.v < 0.55 else 'text-good' }}">{{(top_chart.v*100)|round|int}}</span>/100
+      {% if top_chart.v < 0.55 %}<span class="text-bad">← good_chart未達(≥55)</span>{% endif %}</div>
+    <div>・最高出来高スコア: <span class="{{ 'text-bad' if top_vol.v < 0.5 else 'text-good' }}">{{(top_vol.v*100)|round|int}}</span>/100
+      {% if top_vol.v < 0.5 %}<span class="text-bad">← good_volume未達(≥50)</span>{% endif %}</div>
+    <div>・最高AI類似度: <span class="{{ 'text-warn' if top_sim.v < 0.78 else 'text-good' }}">{{(top_sim.v*100)|round|int}}</span>/100</div>
+    <div class="mt-2 text-slate-500">→ A/B出現条件: (材料≥30+チャート≥55+出来高≥50) または (AI≥78+チャート≥55+出来高≥50) または (ML≥80+AI≥68)</div>
+  </div>
+</details>
+{% endif %}
+
+<!-- カテゴリフィルタ -->
+<div class="flex gap-1.5 mb-4 flex-wrap text-xs md:text-sm">
+  {% for c in ['ALL','A','B','C','D','E'] %}
+  <a href="/?run_date={{run_date}}&category={{c}}&limit={{limit}}"
+     class="px-2.5 py-1.5 rounded-lg border {{ 'bg-acc text-ink border-acc font-semibold' if category==c else 'border-line text-slate-300 hover:bg-panel2' }} no-underline">
+    {{ c }}{% if c!='ALL' %}<span class="hidden sm:inline"> {{cat_labels[c]}}</span>{% endif %}
+    {% if cat_summary.get(c) %}<span class="opacity-60">({{cat_summary[c]}})</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% if not rows %}
+<div class="card p-8 text-center text-slate-400">
+  まだ予測がありません。<code class="text-acc">python -m surge_radar.cli daily</code> を実行するとランキングが生成されます。
+</div>
+{% else %}
+
+<div class="grid gap-2.5">
+  {% for r in rows %}
+  {% set chart_label = '良好' if (r.chart_score or 0) >= 0.65 else ('注意' if (r.chart_score or 0) >= 0.45 else '警戒') %}
+  {% set chart_cls   = 'text-good' if (r.chart_score or 0) >= 0.65 else ('text-warn' if (r.chart_score or 0) >= 0.45 else 'text-bad') %}
+  {% set vol_label   = '急増' if (r.volume_score or 0) >= 0.7 else ('良' if (r.volume_score or 0) >= 0.5 else ('普通' if (r.volume_score or 0) >= 0.3 else '注意')) %}
+  {% set vol_cls     = 'text-good' if (r.volume_score or 0) >= 0.7 else ('text-acc' if (r.volume_score or 0) >= 0.5 else ('text-slate-400' if (r.volume_score or 0) >= 0.3 else 'text-bad')) %}
+  {% set has_material = (r.material_score or 0) > 0.05 or r.top_material %}
+  <div class="card p-3 md:p-4 hover:border-acc/40 transition-colors">
+
+    <!-- 上段: ランク / 銘柄名 / チップ / スコア -->
+    <div class="flex items-start gap-2 md:gap-3">
+      <div class="text-lg md:text-xl font-bold text-slate-500 w-7 text-center shrink-0 pt-0.5">{{r.rank}}</div>
+      <div class="flex-1 min-w-0">
+        <div class="flex flex-wrap items-center gap-1.5 mb-1">
+          <a href="/pred/{{r.id}}" class="font-bold text-base md:text-lg hover:text-acc no-underline text-white leading-tight">{{r.name or r.code}}</a>
+          <span class="text-xs text-slate-500">{{r.code}}</span>
+          <span class="chip border {{catcolor.get(r.category,'')}}">{{r.category}}<span class="hidden sm:inline"> {{cat_labels.get(r.category,'')}}</span></span>
+          {% if r.flags.gates %}
+          {% for g in r.flags.gates[:2] %}<span class="chip bg-bad/10 text-bad border border-bad/30">⚠{{g}}</span>{% endfor %}
+          {% endif %}
+          {% if r.top_material %}
+          <span class="chip border border-good/50 text-good bg-good/10 hidden sm:inline-flex">{{r.top_material}}</span>
+          {% endif %}
+          {% if r.origin == 'backfill' %}
+          <span class="chip bg-slate-600/30 text-slate-400">BF</span>
+          {% endif %}
+        </div>
+
+        <!-- モバイル: チャート・出来高・材料状態を1行で -->
+        <div class="flex flex-wrap items-center gap-2 text-[11px] mb-1">
+          <span class="{{chart_cls}}">チャート:{{chart_label}}</span>
+          <span class="text-slate-600">|</span>
+          <span class="{{vol_cls}}">出来高:{{vol_label}}</span>
+          <span class="text-slate-600">|</span>
+          {% if has_material %}
+          <span class="text-good">材料あり</span>
+          {% else %}
+          <span class="text-slate-500">材料なし</span>
+          {% endif %}
+          {% if r.flags.themes %}
+          <span class="text-slate-600">|</span>
+          {% for th in r.flags.themes[:1] %}<span class="text-acc2">{{th}}</span>{% endfor %}
+          {% endif %}
+        </div>
+
+        <!-- 主要理由 (常時2件) -->
+        <div class="text-xs text-slate-400 leading-relaxed space-y-0.5">
+          {% for reason in r.reasons[:2] %}<div>・{{reason}}</div>{% endfor %}
+        </div>
+
+        <!-- モバイル: 筆頭材料タイトル (材料あり時) -->
+        {% if r.top_material and r.top_material not in (r.reasons[:2]|join) %}
+        <div class="text-xs text-good mt-0.5 sm:hidden">🔥 {{r.top_material}}</div>
+        {% endif %}
+
+        <!-- モバイル: 筆頭失敗条件 -->
+        {% if r.failure_conditions %}
+        <div class="text-[10px] text-bad/80 mt-0.5 line-clamp-1">⚠ {{r.failure_conditions[0]}}</div>
+        {% endif %}
+      </div>
+
+      <!-- スコア + 現在値 + 目標価格 -->
+      <div class="shrink-0 text-right ml-1">
+        <div class="text-2xl md:text-3xl font-bold text-acc leading-none">{{ '%.0f'|format(r.score*100) }}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">¥{{ '{:,.0f}'.format(r.base_price) }}</div>
+        <div class="text-[10px] text-good mt-0.5">→¥{{ '{:,.0f}'.format(r.base_price*1.20) }}</div>
+        {% if r.probability %}
+        <div class="text-[10px] text-acc2 mt-0.5">ML:{{ '%.0f'|format(r.probability*100) }}%</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 折り畳みセクション: 詳細 -->
+    <details class="mt-2">
+      <summary class="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-300 select-none rounded px-1.5 py-0.5 hover:bg-panel2">
+        <i class="arr">▶</i> スコア内訳 / 材料詳細 / classify_path / 失敗条件
+      </summary>
+      <div class="mt-2 space-y-2.5">
+        <!-- サブスコアバー -->
+        <div class="grid grid-cols-3 md:grid-cols-6 gap-x-3 gap-y-1.5 text-[11px]">
+          {% set subs=[('材料',r.material_score,'#34d399'),('チャート',r.chart_score,'#22d3ee'),('出来高',r.volume_score,'#a78bfa'),('テーマ',r.theme_score,'#fbbf24'),('類似',r.similarity_score,'#67e8f9'),('ML確率',r.probability,'#f472b6')] %}
+          {% for label,val,col in subs %}
+          <div>
+            <div class="flex justify-between text-slate-400 mb-0.5"><span>{{label}}</span><span>{{ '%.0f'|format((val or 0)*100) }}</span></div>
+            <div class="bar"><i style="width:{{ ((val or 0)*100)|round }}%;background:{{col}}"></i></div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <!-- チャート・出来高詳細スコア -->
+        <div class="grid grid-cols-2 gap-2 text-[11px] text-slate-400 border-t border-line/50 pt-2">
+          <div>
+            <div class="font-semibold text-slate-300 mb-1">📈 チャート詳細</div>
+            <div class="space-y-0.5">
+              <div>スコア: <span class="{{chart_cls}} font-semibold">{{('{:.0f}'.format((r.chart_score or 0)*100))}}/100</span></div>
+              <div>状態: <span class="{{chart_cls}}">{{chart_label}}</span></div>
+              {% if r.flags.get('sub') %}
+              {% set sub = r.flags.sub %}
+              {% if sub.get('breakout') is not none %}<div>ブレイク: <span class="{{ 'text-good' if sub.breakout > 0.5 else 'text-slate-500' }}">{{ '%.0f'|format(sub.breakout * 100) }}</span></div>{% endif %}
+              {% if sub.get('ma_aligned') is not none %}<div>MA整列: <span class="{{ 'text-good' if sub.ma_aligned > 0.5 else 'text-slate-500' }}">{{ '%.0f'|format(sub.ma_aligned * 100) }}</span></div>{% endif %}
+              {% endif %}
+              <div>+20%目標: <span class="text-good font-semibold">¥{{ '{:,.0f}'.format(r.base_price * 1.20) }}</span></div>
+            </div>
+          </div>
+          <div>
+            <div class="font-semibold text-slate-300 mb-1">📊 出来高詳細</div>
+            <div class="space-y-0.5">
+              <div>スコア: <span class="{{vol_cls}} font-semibold">{{('{:.0f}'.format((r.volume_score or 0)*100))}}/100</span></div>
+              <div>状態: <span class="{{vol_cls}}">{{vol_label}}</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- classify_path -->
+        {% if r.flags.get('classify_path') %}
+        <div class="text-[11px] border-t border-line/50 pt-2">
+          <div class="text-slate-500 mb-0.5">分類パス (なぜ{{r.category}}になったか)</div>
+          <div class="text-slate-300 font-mono bg-panel2 px-2 py-1 rounded text-[10px] break-all">{{r.flags.classify_path}}</div>
+        </div>
+        {% endif %}
+
+        <!-- 追加理由 -->
+        {% if r.reasons|length > 2 %}
+        <div class="text-xs text-slate-400 space-y-0.5 border-t border-line/50 pt-2">
+          {% for reason in r.reasons[2:] %}<div>・{{reason}}</div>{% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- テーマ -->
+        {% if r.flags.themes %}
+        <div class="flex flex-wrap gap-1 border-t border-line/50 pt-2">
+          <span class="text-[11px] text-slate-500">テーマ:</span>
+          {% for th in r.flags.themes %}<span class="chip border border-acc2/40 text-acc2 bg-acc2/5">{{th}}</span>{% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- 失敗条件 -->
+        {% if r.failure_conditions %}
+        <div class="text-xs border-t border-line/50 pt-2">
+          <div class="text-bad/80 mb-1 font-semibold">⚠️ 失敗条件 — これが崩れたら撤退</div>
+          {% for fc in r.failure_conditions %}<div class="text-slate-500 mt-0.5">・{{fc}}</div>{% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- 除外ゲート -->
+        {% if r.flags.gates %}
+        <div class="text-xs text-bad border-t border-line/50 pt-2">⚠️ 除外ゲート: {{ r.flags.gates|join(', ') }}</div>
+        {% endif %}
+
+        <a href="/pred/{{r.id}}" class="text-xs text-acc hover:underline inline-block border-t border-line/50 pt-2">詳細ページ(チャート・材料・出来高) →</a>
+      </div>
+    </details>
+
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ページネーション -->
+<div class="flex gap-2 mt-4 flex-wrap">
+  {% if limit > 50 %}
+  <a href="/?run_date={{run_date}}&category={{category}}&limit=50" class="px-3 py-1.5 text-sm border border-line rounded-lg text-slate-300 hover:bg-panel2 no-underline">50件</a>
+  {% endif %}
+  {% if limit != 100 %}
+  <a href="/?run_date={{run_date}}&category={{category}}&limit=100" class="px-3 py-1.5 text-sm border border-line rounded-lg text-slate-300 hover:bg-panel2 no-underline">100件</a>
+  {% endif %}
+  {% if limit < 300 %}
+  <a href="/?run_date={{run_date}}&category={{category}}&limit=300" class="px-3 py-1.5 text-sm border border-acc/30 rounded-lg text-acc hover:bg-acc/10 no-underline">全件表示(300件)</a>
+  {% endif %}
+  <span class="text-xs text-slate-500 self-center">表示: {{rows|length}}件 / 保存: {{cat_summary.values()|sum}}件</span>
+</div>
+
+{% endif %}
+{% endblock %}
