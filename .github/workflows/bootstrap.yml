@@ -1,23 +1,26 @@
-name: Daily Pipeline
+name: Bootstrap (Initial Price Fetch)
 on:
-  schedule:
-    - cron: "40 7 * * 1-5"
   workflow_dispatch:
     inputs:
-      limit:
-        description: "Max stocks (blank=all ~3000)"
+      batch_start:
+        description: "Start index in universe (0-based)"
         required: false
-        default: ""
+        default: "0"
         type: string
-      skip_materials:
-        description: "Skip materials step (true/false)"
+      batch_size:
+        description: "Number of stocks per batch"
         required: false
-        default: "false"
+        default: "500"
+        type: string
+      price_range:
+        description: "Yahoo Finance range (2y / 1y / 6mo)"
+        required: false
+        default: "2y"
         type: string
 jobs:
-  daily:
+  bootstrap:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 360
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -35,11 +38,14 @@ jobs:
         run: pip install -r requirements.txt
       - name: Initialize DB schema
         run: python -m surge_radar.cli init-db
-      - name: Run daily pipeline
-        run: python scripts/run_daily.py "${{ inputs.limit }}" "${{ inputs.skip_materials }}"
-      - name: Show logs on failure
-        if: failure()
-        run: python scripts/cloud_logs.py || true
+      - name: Bootstrap price data
+        run: |
+          python scripts/bootstrap_prices.py \
+            "${{ inputs.batch_start }}" \
+            "${{ inputs.batch_size }}" \
+            "${{ inputs.price_range }}"
+      - name: Run initial predict (after prices)
+        run: python scripts/run_daily.py "" "false"
       - name: Summary
         if: always()
         run: python scripts/cloud_summary.py || true

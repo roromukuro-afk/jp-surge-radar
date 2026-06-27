@@ -160,30 +160,30 @@ def _norm_code(raw: str) -> str:
     return s[:4]
 
 
-def _get_json(url: str, params: dict, retries: int = 5, timeout: int = 30,
-              base_pause: float = 2.0) -> dict | None:
-    """指数バックオフ付き GET。429/タイムアウト時は待機してリトライ。"""
+def _get_json(url: str, params: dict, retries: int = 2, timeout: int = 15,
+              base_pause: float = 0.5) -> dict | None:
+    """GET with capped retry. 2 retries max, linear backoff to avoid long hangs."""
     for i in range(retries):
         try:
             r = requests.get(url, params=params, timeout=timeout,
                              headers={"User-Agent": "Mozilla/5.0 (surge-radar/1.0)"})
             if r.status_code == 429:
-                wait = base_pause * (2 ** i)
-                print(f"    [TDnet] 429 rate limit, wait {wait:.0f}s (retry {i+1}/{retries})")
+                wait = min(base_pause * (i + 1), 5.0)
+                print(f"    [mat] 429 rate-limit wait {wait:.0f}s", flush=True)
                 time.sleep(wait)
                 continue
             if r.status_code >= 500:
-                time.sleep(base_pause * (i + 1))
+                time.sleep(base_pause)
                 continue
             r.raise_for_status()
             return r.json()
         except requests.exceptions.Timeout:
-            print(f"    [TDnet] timeout retry {i+1}/{retries}")
-            time.sleep(base_pause * (i + 1))
+            print(f"    [mat] timeout retry {i+1}/{retries}", flush=True)
+            time.sleep(base_pause)
         except requests.exceptions.ConnectionError:
-            time.sleep(base_pause * (i + 1))
+            time.sleep(base_pause)
         except Exception:
-            time.sleep(base_pause * (i + 1))
+            time.sleep(base_pause)
     return None
 
 
@@ -220,8 +220,9 @@ def last_materials_date() -> str | None:
     return r["d"] if r and r["d"] else None
 
 
-def fetch_tdnet_range(days: int = 14, max_pages: int = 30, per_page: int = 200,
-                      pause: float = 1.5, since_date: str | None = None) -> dict[str, list[dict]]:
+def fetch_tdnet_range(days: int = 14, max_pages: int = 5, per_page: int = 200,
+                      pause: float = 0.3, since_date: str | None = None,
+                      time_limit_s: float = 120.0) -> dict[str, list[dict]]:
     """
     日付範囲で全開示をまとめて取得し、証券コード -> 開示リスト の辞書を返す。
 
@@ -248,11 +249,15 @@ def fetch_tdnet_range(days: int = 14, max_pages: int = 30, per_page: int = 200,
     by_code: dict[str, list[dict]] = {}
     url = TDNET_RANGE.format(f=from_str, t=to_str)
     total_items = 0
+    t_start = time.monotonic()
 
     for page in range(1, max_pages + 1):
-        d = _get_json(url, {"limit": per_page, "page": page}, base_pause=2.0)
+        if time.monotonic() - t_start > time_limit_s:
+            print(f"    [TDnet] time limit {time_limit_s:.0f}s reached at page {page}, stopping", flush=True)
+            break
+        d = _get_json(url, {"limit": per_page, "page": page})
         if not d:
-            print(f"    [TDnet] page {page} failed (None). Stopping.")
+            print(f"    [TDnet] page {page} failed. Stopping.", flush=True)
             break
         items = d.get("items", [])
         if not items:
@@ -271,7 +276,7 @@ def fetch_tdnet_range(days: int = 14, max_pages: int = 30, per_page: int = 200,
                 "date": dt, "title": td.get("title", ""),
                 "url": td.get("document_url", ""), "source": "tdnet"})
         total_items += len(items)
-        print(f"    [TDnet] page {page}: {len(items)} items (total {total_items})")
+        print(f"    [TDnet] page {page}: {len(items)} items (total {total_items})", flush=True)
         if len(items) < per_page:
             break
         time.sleep(pause)
