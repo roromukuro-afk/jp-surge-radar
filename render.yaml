@@ -4,7 +4,9 @@ services:
     runtime: python
     region: singapore  # 最寄りの無料リージョン (東京なし)
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # Render runs the full container, so install the full pipeline deps.
+    # (requirements.txt alone is the lightweight web set used by Vercel.)
+    buildCommand: pip install -r requirements-pipeline.txt
     startCommand: python -m surge_radar.cli serve --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
