@@ -1,43 +1,37 @@
 name: Daily Pipeline
-
 on:
   schedule:
-    # Every weekday at 07:40 UTC = 16:40 JST
     - cron: "40 7 * * 1-5"
   workflow_dispatch:
-
+    inputs:
+      limit:
+        description: "Stock limit for pipeline"
+        required: false
+        default: "300"
 jobs:
   daily:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Install dependencies
+      - name: Install
         run: pip install -r requirements.txt
-
-      - name: Initialize DB schema
+      - name: Init DB
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python -m surge_radar.cli init-db
-
-      - name: Run daily pipeline
+      - name: Run pipeline
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SURGE_ENABLE_LLM: "0"
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_ADMIN_EMAIL: ${{ secrets.VAPID_ADMIN_EMAIL }}
-        run: python -m surge_radar.cli daily --limit 300
-
+        run: python -m surge_radar.cli daily --limit ${{ github.event.inputs.limit || '300' }}
       - name: Show logs on failure
         if: failure()
         env:
@@ -55,7 +49,6 @@ try:
 except Exception as e:
     print('log fetch failed:', e)
 " || true
-
       - name: Summary
         if: always()
         env:
@@ -67,10 +60,9 @@ sys.path.insert(0, '.')
 try:
     from surge_radar import queries
     ov = queries.overview()
-    print('=== Pipeline Summary ===')
-    print(f'Materials: {ov[\"materials\"]} total, {ov[\"mat_codes_today\"]} codes today')
-    print(f'Teacher: {ov[\"teacher_total\"]} total, live_fail={ov[\"live_fail\"]}')
-    print(f'Today predictions: {ov[\"cat_today\"]}')
+    print('Materials:', ov['materials'], 'codes_today:', ov['mat_codes_today'])
+    print('Teacher:', ov['teacher_total'], 'live_fail:', ov['live_fail'])
+    print('Predictions today:', ov['cat_today'])
 except Exception as e:
     print('summary failed:', e)
 " || true
