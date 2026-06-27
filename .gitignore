@@ -14,3 +14,5 @@ data/logs/
 .env
 *.log
 .pytest_cache/
+
+.vercel

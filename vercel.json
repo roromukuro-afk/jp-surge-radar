@@ -1,12 +1,15 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "api/index.py": {
-      "includeFiles": "surge_radar/**",
-      "excludeFiles": "{data/**,.git/**,tests/**,logs/**,scripts/**,**/__pycache__/**,**/*.pyc}"
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": "surge_radar/**",
+        "maxLambdaSize": "45mb"
+      }
     }
-  },
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "api/index.py" }
   ]
 }

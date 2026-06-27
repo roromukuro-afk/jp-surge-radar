@@ -12,6 +12,7 @@ from pathlib import Path
 import io
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -48,9 +49,12 @@ _LAN_IP = _lan_ip()
 BASE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 app = FastAPI(title="日本株 急騰レーダー (Surge Radar)")
-app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+# StaticFiles はディレクトリが無いと import 時に RuntimeError を投げるため存在確認する
+_STATIC_DIR = BASE / "static"
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-_SW_PATH = BASE / "static" / "sw.js"
+_SW_PATH = _STATIC_DIR / "sw.js"
 
 CATEGORY_LABELS = {
     "A": "今すぐ買い検討型", "B": "ブレイク確認買い型", "C": "押し目・再点火待ち型",
@@ -83,9 +87,8 @@ def service_worker():
     )
 
 
-@app.on_event("startup")
-def _startup():
-    db.init_db()
+# NOTE: DB schema is created/migrated by the pipeline (GitHub Actions), not here.
+# Running init_db() on every serverless cold start is slow and unnecessary.
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -150,12 +153,13 @@ def logs(request: Request, limit: int = 80):
 
 @app.get("/api/ranking")
 def api_ranking(run_date: str | None = None, category: str = "ALL", limit: int = 100):
-    return JSONResponse(queries.ranking(run_date, category, limit))
+    # jsonable_encoder で PostgreSQL の datetime/Decimal を JSON 化
+    return JSONResponse(jsonable_encoder(queries.ranking(run_date, category, limit)))
 
 
 @app.get("/api/accuracy")
 def api_accuracy():
-    return JSONResponse(queries.accuracy_stats())
+    return JSONResponse(jsonable_encoder(queries.accuracy_stats()))
 
 
 @app.get("/data-leak-check", response_class=HTMLResponse)

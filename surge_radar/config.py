@@ -7,22 +7,49 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
-
-# ---- パス ----
-ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-DB_PATH = Path(os.environ.get("SURGE_DB_PATH", DATA_DIR / "surge_radar.db"))
 
 # ---- クラウド DB (Supabase / Neon 等) ----
 # DATABASE_URL が設定されている場合は PostgreSQL を使用。ローカルは SQLite。
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
+
+# ---- パス ----
+# 読み取り専用FS (Vercel等のサーバーレス) では ROOT/data に書けないため、
+# 書込不可なら /tmp 配下にフォールバックする。クラウドDB利用時はローカル
+# データディレクトリは実質使われないが、import 時クラッシュを防ぐ。
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_data_dir() -> Path:
+    candidate = ROOT / "data"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        # 実際に書込めるか確認
+        probe = candidate / ".write_probe"
+        probe.touch()
+        probe.unlink()
+        return candidate
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / "surge_radar_data"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
+
+
+DATA_DIR = _resolve_data_dir()
+DB_PATH = Path(os.environ.get("SURGE_DB_PATH", DATA_DIR / "surge_radar.db"))
 MODEL_DIR = DATA_DIR / "models"
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = DATA_DIR / "logs"
 
-for _d in (DATA_DIR, MODEL_DIR, CACHE_DIR, LOG_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
+for _d in (MODEL_DIR, CACHE_DIR, LOG_DIR):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
 # ---- 対象市場・価格条件 ----
 PRICE_CAP = float(os.environ.get("SURGE_PRICE_CAP", 3000))  # 1株3000円以下
