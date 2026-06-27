@@ -81,16 +81,20 @@ def _clean_seed() -> list[tuple]:
 def fetch_jpx_xls() -> pd.DataFrame:
     """JPX 公開 data_j.xls をDataFrame化。失敗時は空DF。"""
     try:
-        r = requests.get(JPX_XLS_URL, timeout=40, headers={"User-Agent": "Mozilla/5.0"})
+        print("  [universe] downloading JPX xls...", flush=True)
+        r = requests.get(JPX_XLS_URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         (CACHE_DIR / "data_j.xls").write_bytes(r.content)
+        print(f"  [universe] JPX xls downloaded ({len(r.content)//1024}KB), parsing...", flush=True)
         df = pd.read_excel(io.BytesIO(r.content))
+        print(f"  [universe] JPX xls parsed: {len(df)} rows", flush=True)
         return df
-    except Exception:
-        # キャッシュがあれば使う
+    except Exception as e:
+        print(f"  [universe] JPX xls failed: {e}", flush=True)
         p = CACHE_DIR / "data_j.xls"
         if p.exists():
             try:
+                print("  [universe] using cached JPX xls", flush=True)
                 return pd.read_excel(p)
             except Exception:
                 return pd.DataFrame()
@@ -146,7 +150,9 @@ def _market_label(m: str) -> str:
 def load_universe(use_remote: bool = True) -> list[dict]:
     """ユニバースを取得して返す (DBには保存しない)。"""
     # 1) J-Quants
+    print("  [universe] checking J-Quants...", flush=True)
     if use_remote and jquants.is_available():
+        print("  [universe] fetching from J-Quants...", flush=True)
         dfj = jquants.fetch_listed()
         if not dfj.empty:
             rows = []

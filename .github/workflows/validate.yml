@@ -6,7 +6,7 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -22,7 +22,7 @@ jobs:
       - name: DB connection and schema
         run: python -m surge_radar.cli init-db
       - name: Quick pipeline smoke test
-        run: python scripts/run_daily.py "5" "true"
+        run: python scripts/run_daily.py "5" "true" "true"
       - name: Summary
         if: always()
         run: python scripts/cloud_summary.py || true

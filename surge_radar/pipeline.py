@@ -71,7 +71,26 @@ def step_critical(job: str, fn, *args, **kwargs):
         raise RuntimeError(f"Critical step '{job}' failed: {e}") from e
 
 
-def update_universe_step():
+def update_universe_step(stale_days: int = 7):
+    """Skip remote fetch if securities table was updated within stale_days."""
+    with db.cursor() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt, MAX(updated_at) as last FROM securities"
+        ).fetchone()
+        cnt = row["cnt"] if row else 0
+        last = row["last"] if row else None
+
+    if cnt > 100 and last:
+        from datetime import timezone
+        if hasattr(last, "tzinfo") and last.tzinfo:
+            age = (datetime.now(timezone.utc) - last).total_seconds() / 86400
+        else:
+            age = (datetime.now() - last).total_seconds() / 86400
+        if age < stale_days:
+            print(f"  [universe] {cnt} securities, updated {age:.1f}d ago — skipping remote fetch", flush=True)
+            return {"universe": cnt, "skipped": True}
+
+    print(f"  [universe] fetching remote universe (cnt={cnt}, last={last})", flush=True)
     rows = universe.load_universe()
     n = universe.save_universe(rows)
     return {"universe": n}
@@ -170,7 +189,8 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
               skip_materials: bool = False, retrain_if_needed: bool = True,
               price_pause: float = 0.25, material_pause: float = 0.3,
               material_days: int = 14, material_max_pages: int = 5,
-              material_time_limit: float = 120.0) -> dict:
+              material_time_limit: float = 120.0,
+              update_universe: bool = True) -> dict:
     """日次フル実行。limit で銘柄数を制限可(テスト/初回向け)。"""
     db.init_db()
     asof = datetime.now().strftime("%Y-%m-%d")
@@ -178,9 +198,17 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
     pipeline_jid = _log_start("daily_pipeline")
     try:
         # --- CRITICAL steps: failure aborts pipeline ---
-        step_critical("universe", update_universe_step)
+        if update_universe:
+            step_critical("universe", update_universe_step)
+        else:
+            print(f"[{datetime.now():%H:%M:%S}] universe update skipped", flush=True)
 
         codes = universe.get_target_codes()
+        if not codes:
+            print(f"[{datetime.now():%H:%M:%S}] universe empty, seeding from local...", flush=True)
+            seed_rows = universe.load_universe(use_remote=False)
+            universe.save_universe(seed_rows)
+            codes = universe.get_target_codes()
         if limit:
             codes = codes[:limit]
         summary["target_codes"] = len(codes)
