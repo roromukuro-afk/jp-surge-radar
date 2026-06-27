@@ -2,9 +2,9 @@ name: Daily Pipeline
 
 on:
   schedule:
-    # 毎営業日 16:40 JST = 07:40 UTC (月〜金)
+    # Every weekday at 07:40 UTC = 16:40 JST
     - cron: "40 7 * * 1-5"
-  workflow_dispatch:  # 手動実行も可能
+  workflow_dispatch:
 
 jobs:
   daily:
@@ -24,12 +24,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: スキーマ初期化 (新テーブルのみ追加)
+      - name: Initialize DB schema
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python -m surge_radar.cli init-db
 
-      - name: 日次パイプライン実行
+      - name: Run daily pipeline
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SURGE_ENABLE_LLM: "0"
@@ -38,7 +38,7 @@ jobs:
           VAPID_ADMIN_EMAIL: ${{ secrets.VAPID_ADMIN_EMAIL }}
         run: python -m surge_radar.cli daily --limit 300
 
-      - name: 失敗時ログ出力
+      - name: Show logs on failure
         if: failure()
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -56,7 +56,7 @@ except Exception as e:
     print('log fetch failed:', e)
 " || true
 
-      - name: 実行サマリー
+      - name: Summary
         if: always()
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -65,7 +65,7 @@ except Exception as e:
 import os, sys
 sys.path.insert(0, '.')
 try:
-    from surge_radar import db, queries
+    from surge_radar import queries
     ov = queries.overview()
     print('=== Pipeline Summary ===')
     print(f'Materials: {ov[\"materials\"]} total, {ov[\"mat_codes_today\"]} codes today')
