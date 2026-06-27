@@ -316,28 +316,25 @@ def store_materials(code: str, items: list[dict]) -> int:
     return n
 
 
-def recent_material_score(code: str, asof: str, lookback_days: int = 25) -> dict:
+def _empty_material_score() -> dict:
+    return {"material_raw": 0.0, "pos_impact": 0.0, "neg_impact": 0.0,
+            "has_fresh_material": 0, "last_material_days": None,
+            "dilution_flag": 0, "going_concern_flag": 0, "n_materials": 0,
+            "top_category": "", "top_title": "", "themes": []}
+
+
+def score_material_rows(rows: list[dict], asof: str) -> dict:
+    """既に取得済みの材料行リストからスコアを計算 (単一/バルク共通)。
+
+    rows は date DESC 順で date,category,title,sentiment,impact,persistence を持つこと。
     """
-    DB内の直近材料を集計して材料サブスコア(0..1)と内訳を返す。
-    価格/出来高反応との掛け合わせは features 側で行う(材料反応の確認)。
-    """
-    start = (datetime.strptime(asof, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-    with db.cursor() as conn:
-        rows = conn.execute(
-            "SELECT date,category,title,sentiment,impact,persistence FROM materials "
-            "WHERE code=%s AND date BETWEEN %s AND %s ORDER BY date DESC",
-            (code, start, asof),
-        ).fetchall()
     themes_found: list[str] = []
     for r in rows:
         for t, kws in THEME_KEYWORDS.items():
             if any(k in (r["title"] or "") for k in kws) and t not in themes_found:
                 themes_found.append(t)
     if not rows:
-        return {"material_raw": 0.0, "pos_impact": 0.0, "neg_impact": 0.0,
-                "has_fresh_material": 0, "last_material_days": None,
-                "dilution_flag": 0, "going_concern_flag": 0, "n_materials": 0,
-                "top_category": "", "top_title": "", "themes": []}
+        return _empty_material_score()
 
     pos = [r for r in rows if (r["sentiment"] or 0) > 0]
     neg = [r for r in rows if (r["sentiment"] or 0) < 0]
@@ -372,6 +369,43 @@ def recent_material_score(code: str, asof: str, lookback_days: int = 25) -> dict
         "top_title": top_title,
         "themes": themes_found,
     }
+
+
+def recent_material_score(code: str, asof: str, lookback_days: int = 25) -> dict:
+    """DB内の直近材料を集計して材料サブスコア(0..1)と内訳を返す (単一銘柄)。"""
+    start = (datetime.strptime(asof, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    with db.cursor() as conn:
+        rows = conn.execute(
+            "SELECT date,category,title,sentiment,impact,persistence FROM materials "
+            "WHERE code=%s AND date BETWEEN %s AND %s ORDER BY date DESC",
+            (code, start, asof),
+        ).fetchall()
+    return score_material_rows(rows, asof)
+
+
+def recent_material_scores_bulk(codes: list[str], asof: str, lookback_days: int = 25,
+                                chunk: int = 500) -> dict[str, dict]:
+    """複数銘柄の材料スコアをまとめて取得 (1クエリ/チャンク)。
+
+    predict のループで銘柄ごとに DB 往復するのを避ける。
+    返り値に存在しない銘柄は空スコア扱いにすること。
+    """
+    if not codes:
+        return {}
+    start = (datetime.strptime(asof, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    by_code: dict[str, list] = {}
+    for i in range(0, len(codes), chunk):
+        part = codes[i:i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        with db.cursor() as conn:
+            rows = conn.execute(
+                f"SELECT code,date,category,title,sentiment,impact,persistence FROM materials "
+                f"WHERE code IN ({ph}) AND date BETWEEN %s AND %s ORDER BY code, date DESC",
+                tuple(part) + (start, asof),
+            ).fetchall()
+        for r in rows:
+            by_code.setdefault(r["code"], []).append(r)
+    return {c: score_material_rows(rs, asof) for c, rs in by_code.items()}
 
 
 # ---------- EDINET (金融庁公式API、無料、登録不要) ----------

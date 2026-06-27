@@ -3,14 +3,5 @@ psycopg2-binary==2.9.10
 uvicorn[standard]==0.34.0
 jinja2==3.1.5
 python-multipart==0.0.20
-pandas==2.2.3
-numpy==2.2.1
-yfinance==0.2.51
-requests==2.32.3
-beautifulsoup4==4.12.3
-lxml==5.3.0
-openpyxl==3.1.5
-scikit-learn==1.6.1
-joblib==1.4.2
-xlrd==2.0.1
 pywebpush==2.0.0
+requests==2.32.3

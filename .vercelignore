@@ -1,0 +1,15 @@
+.git
+.venv
+data
+logs
+tests
+scripts
+*.log
+*.db
+*.db-wal
+*.db-shm
+__pycache__
+*.pyc
+.pytest_cache
+.env
+requirements-pipeline.txt

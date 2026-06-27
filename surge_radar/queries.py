@@ -1,6 +1,8 @@
 """Web表示用の読み取りクエリ。"""
 from __future__ import annotations
 
+import json
+
 from . import db
 from .db import loadj
 
@@ -166,6 +168,106 @@ def job_logs(limit: int = 60) -> list[dict]:
         d["counts"] = loadj(d.get("counts"), {})
         out.append(d)
     return out
+
+
+def accuracy_stats() -> dict:
+    """的中率・失敗率の集計 (pure DB — no ML deps)。"""
+    with db.cursor() as conn:
+        rows = conn.execute(
+            "SELECT o.result_class, COUNT(*) n FROM prediction_outcomes o "
+            "JOIN predictions p ON p.id=o.prediction_id WHERE p.status='judged' "
+            "GROUP BY o.result_class").fetchall()
+        cat_rows = conn.execute(
+            "SELECT p.category, o.result_class, COUNT(*) n FROM prediction_outcomes o "
+            "JOIN predictions p ON p.id=o.prediction_id WHERE p.status='judged' "
+            "GROUP BY p.category,o.result_class").fetchall()
+        tag_rows = conn.execute(
+            "SELECT failure_tags FROM prediction_outcomes o JOIN predictions p ON p.id=o.prediction_id "
+            "WHERE p.status='judged'").fetchall()
+        origin_rows = conn.execute(
+            "SELECT COALESCE(p.origin,'live') origin, o.result_class, COUNT(*) n "
+            "FROM prediction_outcomes o JOIN predictions p ON p.id=o.prediction_id "
+            "WHERE p.status='judged' GROUP BY p.origin, o.result_class").fetchall()
+
+    by_class = {r["result_class"]: r["n"] for r in rows}
+    total = sum(by_class.values())
+    success = by_class.get("S", 0) + by_class.get("A", 0) + by_class.get("B", 0)
+    near = by_class.get("near", 0)
+
+    by_cat: dict = {}
+    for r in cat_rows:
+        by_cat.setdefault(r["category"], {})[r["result_class"]] = r["n"]
+
+    tag_count: dict = {}
+    for r in tag_rows:
+        for t in (loadj(r["failure_tags"], []) or []):
+            tag_count[t] = tag_count.get(t, 0) + 1
+
+    by_origin_raw: dict = {}
+    for r in origin_rows:
+        by_origin_raw.setdefault(r["origin"], {})[r["result_class"]] = r["n"]
+
+    def _origin_stats(d: dict) -> dict:
+        tot = sum(d.values())
+        s = d.get("S", 0) + d.get("A", 0) + d.get("B", 0)
+        n = d.get("near", 0)
+        return {"total": tot, "by_class": d,
+                "hit_rate": round(s / tot, 4) if tot else None,
+                "hit_or_near_rate": round((s + n) / tot, 4) if tot else None}
+
+    return {
+        "total_judged": total,
+        "by_class": by_class,
+        "hit_rate": round(success / total, 4) if total else None,
+        "hit_or_near_rate": round((success + near) / total, 4) if total else None,
+        "by_category": by_cat,
+        "failure_tags": dict(sorted(tag_count.items(), key=lambda kv: -kv[1])),
+        "by_origin": {k: _origin_stats(v) for k, v in by_origin_raw.items()},
+    }
+
+
+def latest_model_meta() -> dict | None:
+    """最新モデルメタデータ (pure DB — no ML deps)。"""
+    with db.cursor() as conn:
+        r = conn.execute(
+            "SELECT version,trained_at,n_samples,n_pos,n_neg,metrics,feature_importance,notes "
+            "FROM model_meta ORDER BY trained_at DESC LIMIT 1"
+        ).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["metrics"] = loadj(d.get("metrics"), {})
+    d["feature_importance"] = loadj(d.get("feature_importance"), {})
+    return d
+
+
+def teacher_counts() -> dict:
+    """教師データ統計 (pure DB — no ML deps)。"""
+    with db.cursor() as conn:
+        rows = conn.execute(
+            "SELECT source, COUNT(*) n, SUM(label) pos FROM teacher_samples GROUP BY source"
+        ).fetchall()
+        tot = conn.execute("SELECT COUNT(*) n FROM teacher_samples").fetchone()["n"]
+        pos_tot = conn.execute("SELECT COUNT(*) n FROM teacher_samples WHERE label=1").fetchone()["n"]
+        lf = conn.execute("SELECT tags FROM teacher_samples WHERE source='live_fail'").fetchall()
+
+    source_stats = {r["source"]: {"n": r["n"], "pos": r["pos"] or 0} for r in rows}
+    fail_tag_counts: dict = {}
+    for r in lf:
+        try:
+            t = json.loads(r["tags"] or "{}")
+            for tag in t.get("fail_tags", []):
+                fail_tag_counts[tag] = fail_tag_counts.get(tag, 0) + 1
+        except Exception:
+            pass
+
+    return {
+        "_total": tot,
+        "_pos_total": pos_tot,
+        "_neg_total": tot - pos_tot,
+        "by_source": source_stats,
+        "fail_tag_counts": fail_tag_counts,
+    }
 
 
 def overview() -> dict:

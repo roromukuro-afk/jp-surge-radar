@@ -13,12 +13,18 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from contextlib import contextmanager
 from typing import Any, Iterable
 
 from .config import DB_PATH
 
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
+
+# 接続プール: PostgreSQL 接続は確立に ~0.8s かかる (リモート Neon)。
+# スレッドローカルに 1 本保持し、ループ内の db.cursor() 呼び出しで再利用する。
+# これがないと track_all 等が銘柄ごとに新規接続を張り、タイムアウトする。
+_local = threading.local()
 
 # PostgreSQL の場合 RETURNING id を付与するテーブル (BIGSERIAL PRIMARY KEY 列を持つもの)
 _TABLES_WITH_AUTO_ID = {"materials", "predictions", "teacher_samples", "job_logs", "push_subscriptions"}
@@ -497,7 +503,62 @@ def _connect_sqlite() -> _SQLiteConn:
 
 
 def connect() -> _PGConn | _SQLiteConn:
+    """新規接続を返す (プールを使わない直接接続。init_db 等の単発用途)。"""
     return _connect_pg() if DATABASE_URL else _connect_sqlite()
+
+
+# 一定時間アイドルしたプール接続は使用前に SELECT 1 で生存確認する
+# (Neon 等はアイドル接続を切断するため)。ループ内の連続使用では発火しない。
+_POOL_VALIDATE_IDLE_S = 20.0
+
+
+def _pooled_pg() -> _PGConn:
+    """スレッドローカルに保持した PostgreSQL 接続を再利用する。
+
+    接続が閉じている/壊れている場合は張り直す。リモート Neon への接続確立は
+    高コスト (~0.8s) なため、ループ内の繰り返し呼び出しでこれが効く。
+    アイドルが続いた接続は使用前に生存確認する。
+    """
+    import time
+    conn = getattr(_local, "pg_conn", None)
+    last = getattr(_local, "pg_last_used", 0.0)
+    now = time.monotonic()
+    if conn is not None:
+        alive = False
+        try:
+            if conn._conn.closed == 0:
+                alive = True
+        except Exception:
+            alive = False
+        if alive and (now - last) > _POOL_VALIDATE_IDLE_S:
+            # アイドル後: 実際にクエリを投げて生存確認
+            try:
+                conn._cur.execute("SELECT 1")
+                conn._cur.fetchone()
+                conn._conn.rollback()
+            except Exception:
+                alive = False
+        if alive:
+            _local.pg_last_used = now
+            return conn
+        try:
+            conn.close()
+        except Exception:
+            pass
+    conn = _connect_pg()
+    _local.pg_conn = conn
+    _local.pg_last_used = now
+    return conn
+
+
+def _drop_pooled_pg() -> None:
+    conn = getattr(_local, "pg_conn", None)
+    _local.pg_conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def init_db() -> None:
@@ -596,12 +657,30 @@ def _migrate_sqlite(conn: _SQLiteConn) -> None:
 
 @contextmanager
 def cursor():
-    conn = connect()
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+    """DB カーソル。
+
+    PostgreSQL: スレッドローカル接続を再利用 (成功時 commit、例外時 rollback)。
+                接続が壊れていたら破棄して次回張り直す。接続は閉じない。
+    SQLite:     従来どおり毎回開いて閉じる (ローカルファイルなので安価)。
+    """
+    if DATABASE_URL:
+        conn = _pooled_pg()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn._conn.rollback()
+            except Exception:
+                _drop_pooled_pg()
+            raise
+    else:
+        conn = _connect_sqlite()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # ---------- ユーティリティ ----------

@@ -1,0 +1,13 @@
+# Full dependencies for the data pipeline (GitHub Actions / local).
+# Includes the lightweight web deps plus heavy ML/data libraries.
+# The Vercel/Render web layer uses only requirements.txt (no numpy/pandas/sklearn).
+-r requirements.txt
+pandas==2.2.3
+numpy==2.2.1
+yfinance==0.2.51
+beautifulsoup4==4.12.3
+lxml==5.3.0
+openpyxl==3.1.5
+scikit-learn==1.6.1
+joblib==1.4.2
+xlrd==2.0.1

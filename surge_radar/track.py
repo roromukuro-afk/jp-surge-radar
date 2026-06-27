@@ -24,6 +24,14 @@ def track_all(asof: str | None = None) -> dict:
     asof = asof or datetime.now().strftime("%Y-%m-%d")
     with db.cursor() as conn:
         preds = conn.execute("SELECT * FROM predictions WHERE status='open'").fetchall()
+        priced = {r["code"] for r in
+                  conn.execute("SELECT DISTINCT code FROM prices").fetchall()}
+
+    # 価格データが無い銘柄の予測はこのrunでは評価不能なのでスキップ
+    # (bootstrap で価格取得後に評価される)。無駄な往復を避ける。
+    skipped_no_price = sum(1 for p in preds if p["code"] not in priced)
+    preds = [p for p in preds if p["code"] in priced]
+    print(f"    [track] {len(preds)} open with prices, {skipped_no_price} skipped (no price)", flush=True)
 
     judged = 0; updated = 0; live_fail = 0; live_success = 0
     market_now = themes.market_regime(asof).get("score", 0.0)

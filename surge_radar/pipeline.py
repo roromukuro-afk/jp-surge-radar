@@ -253,7 +253,7 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
             "asof": asof, "target_codes": summary.get("target_codes", 0),
             "predict": pred_summary,
         })
-        print(f"[{datetime.now():%H:%M:%S}] pipeline OK — A/B={n_ab}", flush=True)
+        print(f"[{datetime.now():%H:%M:%S}] pipeline OK - A/B={n_ab}", flush=True)
         if push_notify.is_configured():
             step("push_notify", push_notify.send_all,
                  title=f"急騰レーダー {asof} 更新完了",

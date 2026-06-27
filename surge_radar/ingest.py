@@ -100,6 +100,32 @@ def available_codes() -> list[str]:
     return [r["code"] for r in rows]
 
 
+def load_history_bulk(codes: list[str], chunk: int = 500) -> dict[str, "pd.DataFrame"]:
+    """複数銘柄の日足をまとめて取得 (1クエリ/チャンク)。{code: df(昇順)} を返す。
+
+    predict 等で銘柄ごとに load_history する代わりに使い、DB 往復を激減させる。
+    価格データが無い銘柄はキーに含まれない。
+    """
+    if not codes:
+        return {}
+    cols = ["date", "open", "high", "low", "close", "volume", "turnover"]
+    by_code: dict[str, list] = {}
+    for i in range(0, len(codes), chunk):
+        part = codes[i:i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        with db.cursor() as conn:
+            rows = conn.execute(
+                f"SELECT code,date,open,high,low,close,volume,turnover FROM prices "
+                f"WHERE code IN ({ph}) ORDER BY code, date ASC", tuple(part)
+            ).fetchall()
+        for r in rows:
+            by_code.setdefault(r["code"], []).append(r)
+    out: dict[str, pd.DataFrame] = {}
+    for c, rs in by_code.items():
+        out[c] = pd.DataFrame([{k: r[k] for k in cols} for r in rs])
+    return out
+
+
 def stale_codes(codes: list[str], stale_days: int = 2) -> list[str]:
     """
     直近 stale_days 日以内に価格データがないコードのみ返す。

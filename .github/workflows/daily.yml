@@ -32,7 +32,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-pipeline.txt
       - name: Initialize DB schema
         run: python -m surge_radar.cli init-db
       - name: Run daily pipeline

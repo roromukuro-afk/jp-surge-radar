@@ -38,12 +38,27 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     if not codes:
         codes = ingest.available_codes()
 
+    # 価格データのある銘柄だけを評価対象にする。
+    # universe 全体(~3500)を回すと no-price 銘柄ごとに無駄なDB往復が発生し
+    # クラウドの daily 制限時間を超過する。priced は1クエリで取得。
+    priced = set(ingest.available_codes())
+    n_before = len(codes)
+    codes = [c for c in codes if c in priced]
+    print(f"    [predict] {len(codes)} priced codes (of {n_before} universe)", flush=True)
+
+    # バルクプリロード: 銘柄ごとのDB往復を排除 (load_history/materials/sectors)。
+    # これがないと daily(~3000銘柄)で1万回近いDB往復が発生しタイムアウトする。
     name_map = _names()
+    sector_map = _sectors_map()
+    hist_map = ingest.load_history_bulk(codes)
+    mat_map = materials.recent_material_scores_bulk(codes, run_date) if use_materials else {}
+    print(f"    [predict] preloaded: {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
+
     scored = []
     skipped = 0
     for i, code in enumerate(codes, 1):
-        df = ingest.load_history(code)
-        if df.empty or len(df) < 60:
+        df = hist_map.get(code)
+        if df is None or df.empty or len(df) < 60:
             skipped += 1
             continue
         # asof時点のインデックス(過去バックフィル対応)
@@ -63,8 +78,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             skipped += 1
             continue
 
-        mat = materials.recent_material_score(code, run_date) if use_materials else None
-        sectors = _sectors(code)
+        mat = mat_map.get(code, materials._empty_material_score()) if use_materials else None
+        sectors = sector_map.get(code, [])
         theme_tw, matched_themes = themes.theme_tailwind_for(sectors, (mat or {}).get("themes", []))
 
         feats = features.build_features(df, idx, material=mat,
@@ -136,6 +151,13 @@ def _sectors(code: str) -> list[str]:
     if not r:
         return []
     return [x for x in [r["sector33"], r["sector17"]] if x]
+
+
+def _sectors_map() -> dict[str, list[str]]:
+    """全銘柄の業種を1クエリで取得。predict のループ用。"""
+    with db.cursor() as conn:
+        rows = conn.execute("SELECT code,sector33,sector17 FROM securities").fetchall()
+    return {r["code"]: [x for x in [r["sector33"], r["sector17"]] if x] for r in rows}
 
 
 def _names() -> dict:
