@@ -108,6 +108,6 @@ def stale_codes(codes: list[str], stale_days: int = 2) -> list[str]:
     cutoff = (datetime.now() - timedelta(days=stale_days)).strftime("%Y-%m-%d")
     with db.cursor() as conn:
         fresh = {r["code"] for r in conn.execute(
-            "SELECT code FROM prices WHERE date >= ? GROUP BY code", (cutoff,)
+            "SELECT code FROM prices WHERE date >= %s GROUP BY code", (cutoff,)
         ).fetchall()}
     return [c for c in codes if c not in fresh]
