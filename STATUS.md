@@ -73,36 +73,32 @@
 
 ## Renderデプロイ手順 (残作業)
 
-### STEP 1: Renderアカウント作成
-1. https://render.com → 「Get Started for Free」
-2. **GitHub アカウントでサインイン** (roromukuro-afk)
-3. ダッシュボードが開く
+### STEP 1: Renderアカウント + API Key 取得
+1. https://render.com → 「Get Started for Free」→ GitHubでサインイン (roromukuro-afk)
+2. ダッシュボード右上 → Account Settings → **API Keys** → Create API Key
+3. `rnd_xxx...` をコピー
 
-### STEP 2: Web Service 作成
-1. 「New +」→「Web Service」
-2. リポジトリ選択: `roromukuro-afk/jp-surge-radar`
-3. 設定確認 (render.yaml が自動読み込みされる):
-   - Name: `surge-radar`
-   - Region: Singapore
-   - Branch: `master`
-   - Build: `pip install -r requirements.txt`
-   - Start: `python -m surge_radar.cli serve --host 0.0.0.0 --port $PORT`
-   - Plan: **Free**
+### STEP 2: 自動デプロイスクリプトを実行 (PowerShell)
+```powershell
+cd C:\Users\rorom\jp_surge_radar
+$env:RENDER_API_KEY = 'rnd_xxx...'   # STEP1 でコピーした値
+python scripts/deploy_render.py
+```
+→ DATABASE_URL / VAPID 鍵は .env から自動読み込み (画面に表示しない)
+→ Render にサービスが作成され、ビルドが開始 (約3〜5分)
 
-### STEP 3: 環境変数設定
-「Environment」タブで以下を設定:
+### STEP 3 (手動代替): ダッシュボードで作成する場合
+1. 「New +」→「Web Service」→ リポジトリ `roromukuro-afk/jp-surge-radar`
+2. render.yaml が自動読み込みされる (Name: surge-radar, Free, Singapore)
+3. 「Environment」タブで以下を手動設定:
 
 | 変数名 | 値 |
 |--------|---|
-| `DATABASE_URL` | (Neon接続文字列 - .env参照) |
-| `VAPID_PRIVATE_KEY` | (scripts/gen_vapid_keys.py 実行済みの値 - .env参照) |
-| `VAPID_PUBLIC_KEY` | `BGPbIu5i_U-VwtetW8VyH-5ezvNEcFK1dZqv6RE84xB1_WNJEu3FtEicVv-23fZkCkPBzitILNaZz3Y7zMKRyqE` |
+| `DATABASE_URL` | (.env 参照、表示禁止) |
+| `VAPID_PRIVATE_KEY` | (.env 参照、表示禁止) |
+| `VAPID_PUBLIC_KEY` | `BF1iF9edLMf6iTl50OQOypf6wAG3bYdxB5p7rVTmg2MndkUPyNEAc4h6PNzhRUAnf66Lg9tPFArm12BH3IDFbPk` |
 | `VAPID_ADMIN_EMAIL` | `roromukuro@gmail.com` |
 | `SURGE_ENABLE_LLM` | `0` |
-
-### STEP 4: デプロイ
-「Create Web Service」→ 約3分でビルド完了 →
-`https://surge-radar-xxxx.onrender.com` が起動
 
 ---
 
