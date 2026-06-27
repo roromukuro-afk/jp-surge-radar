@@ -5,9 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Stock limit for pipeline"
+        description: "Max stocks to process"
         required: false
         default: "300"
+        type: string
 jobs:
   daily:
     runs-on: ubuntu-latest
@@ -18,51 +19,27 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install
+      - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Init DB
+      - name: Initialize DB schema
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python -m surge_radar.cli init-db
-      - name: Run pipeline
+      - name: Run daily pipeline
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SURGE_ENABLE_LLM: "0"
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_ADMIN_EMAIL: ${{ secrets.VAPID_ADMIN_EMAIL }}
-        run: python -m surge_radar.cli daily --limit ${{ github.event.inputs.limit || '300' }}
+        run: python -m surge_radar.cli daily --limit ${{ inputs.limit || '300' }}
       - name: Show logs on failure
         if: failure()
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python -c "
-import os, sys
-sys.path.insert(0, '.')
-try:
-    from surge_radar import db
-    with db.cursor() as c:
-        rows = c.execute('SELECT job,started_at,status,message FROM job_logs ORDER BY id DESC LIMIT 10').fetchall()
-    for r in rows:
-        print(r['job'], r['started_at'], r['status'], (r['message'] or '')[:200])
-except Exception as e:
-    print('log fetch failed:', e)
-" || true
+        run: python scripts/cloud_logs.py || true
       - name: Summary
         if: always()
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python -c "
-import os, sys
-sys.path.insert(0, '.')
-try:
-    from surge_radar import queries
-    ov = queries.overview()
-    print('Materials:', ov['materials'], 'codes_today:', ov['mat_codes_today'])
-    print('Teacher:', ov['teacher_total'], 'live_fail:', ov['live_fail'])
-    print('Predictions today:', ov['cat_today'])
-except Exception as e:
-    print('summary failed:', e)
-" || true
+        run: python scripts/cloud_summary.py || true
