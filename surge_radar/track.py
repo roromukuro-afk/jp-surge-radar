@@ -37,14 +37,39 @@ def track_all(asof: str | None = None) -> dict:
     success_sab = {"S": 0, "A": 0, "B": 0}
     market_now = themes.market_regime(asof).get("score", 0.0)
 
+    # バルクプリロード: 銘柄ごとのDB往復を排除 (旧来は track が15分かかっていた)
+    codes = sorted({p["code"] for p in preds})
+    hist_map = ingest.load_history_bulk(codes)
+    mat_map = materials.recent_material_scores_bulk(codes, asof)
+    print(f"    [track] preloaded {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
+
+    outcome_rows = []      # prediction_outcomes への upsert をまとめて実行
+    finalized_ids = []     # status='judged' に更新する id
+    teacher_args = []      # _add_teacher 用 (pred, feats, label, fail_tags, result)
+
+    OUTCOME_SQL = (
+        """INSERT INTO prediction_outcomes
+           (prediction_id,judged_date,bars_tracked,max_up_5d,max_up_10d,max_up_20d,
+            days_to_20pct,max_drawdown,close_up_maintained,faded_after_high,
+            material_continued,volume_continued,result_class,failure_tags,notes,next_learning)
+           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           ON CONFLICT(prediction_id) DO UPDATE SET
+             judged_date=excluded.judged_date,bars_tracked=excluded.bars_tracked,
+             max_up_5d=excluded.max_up_5d,max_up_10d=excluded.max_up_10d,
+             max_up_20d=excluded.max_up_20d,days_to_20pct=excluded.days_to_20pct,
+             max_drawdown=excluded.max_drawdown,close_up_maintained=excluded.close_up_maintained,
+             faded_after_high=excluded.faded_after_high,material_continued=excluded.material_continued,
+             volume_continued=excluded.volume_continued,result_class=excluded.result_class,
+             failure_tags=excluded.failure_tags,next_learning=excluded.next_learning,
+             updated_at=CURRENT_TIMESTAMP""")
+
     for p in preds:
-        df = ingest.load_history(p["code"])
-        if df.empty:
+        df = hist_map.get(p["code"])
+        if df is None or df.empty:
             continue
         # T0インデックス
         t0 = df.index[df["date"] == p["run_date"]]
         if len(t0) == 0:
-            # run_date が休場等。直近のそれ以前の足を採用
             prior = df[df["date"] <= p["run_date"]]
             if prior.empty:
                 continue
@@ -59,49 +84,30 @@ def track_all(asof: str | None = None) -> dict:
         result, base_tags = labeling.classify_result(oc)
         feats = loadj(p["features"], {})
 
-        # 材料/出来高/テーマの継続確認(事後)
-        mat_now = materials.recent_material_score(p["code"], asof)
+        # 材料/出来高/テーマの継続確認(事後) — プリロード済みスコアを使用
+        mat_now = mat_map.get(p["code"], {})
         material_continued = int(mat_now.get("has_fresh_material", 0) or mat_now.get("n_materials", 0) > 0)
         volume_continued = int(oc["max_up_10d"] > 0 and not oc["faded_after_high"])
-        theme_followed = None
 
         fail_tags = base_tags + labeling.derive_failure_tags(
             oc, feats, material_continued=material_continued,
-            volume_continued=volume_continued, theme_followed=theme_followed,
+            volume_continued=volume_continued, theme_followed=None,
             market_score_now=market_now)
         fail_tags = sorted(set(fail_tags))
-
         next_learning = _next_learning(result, fail_tags)
 
-        with db.cursor() as conn:
-            conn.execute(
-                """INSERT INTO prediction_outcomes
-                   (prediction_id,judged_date,bars_tracked,max_up_5d,max_up_10d,max_up_20d,
-                    days_to_20pct,max_drawdown,close_up_maintained,faded_after_high,
-                    material_continued,volume_continued,result_class,failure_tags,notes,next_learning)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(prediction_id) DO UPDATE SET
-                     judged_date=excluded.judged_date,bars_tracked=excluded.bars_tracked,
-                     max_up_5d=excluded.max_up_5d,max_up_10d=excluded.max_up_10d,
-                     max_up_20d=excluded.max_up_20d,days_to_20pct=excluded.days_to_20pct,
-                     max_drawdown=excluded.max_drawdown,close_up_maintained=excluded.close_up_maintained,
-                     faded_after_high=excluded.faded_after_high,material_continued=excluded.material_continued,
-                     volume_continued=excluded.volume_continued,result_class=excluded.result_class,
-                     failure_tags=excluded.failure_tags,next_learning=excluded.next_learning,
-                     updated_at=CURRENT_TIMESTAMP""",
-                (p["id"], asof, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
-                 oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
-                 material_continued, volume_continued, result, db.j(fail_tags), "", next_learning),
-            )
+        outcome_rows.append(
+            (p["id"], asof, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
+             oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
+             material_continued, volume_continued, result, db.j(fail_tags), "", next_learning))
         updated += 1
 
         # 20営業日追跡完了 or 既に+20%到達 → 確定
         finalize = (oc["bars_tracked"] >= JUDGE_WINDOW) or (oc["days_to_20pct"] is not None)
         if finalize:
             label = labeling.is_success(oc)
-            _add_teacher(p, feats, label, fail_tags, result)
-            with db.cursor() as conn:
-                conn.execute("UPDATE predictions SET status='judged' WHERE id=%s", (p["id"],))
+            teacher_args.append((p, feats, label, fail_tags, result))
+            finalized_ids.append(p["id"])
             judged += 1
             if label:
                 live_success += 1
@@ -111,6 +117,19 @@ def track_all(asof: str | None = None) -> dict:
                 live_fail += 1
                 if result == "danger_fail":
                     danger_fail += 1
+
+    # まとめて書き込み
+    if outcome_rows:
+        for i in range(0, len(outcome_rows), 500):
+            db.executemany(OUTCOME_SQL, outcome_rows[i:i + 500])
+    for args in teacher_args:
+        _add_teacher(*args)
+    if finalized_ids:
+        with db.cursor() as conn:
+            for i in range(0, len(finalized_ids), 500):
+                chunk = finalized_ids[i:i + 500]
+                ph = ",".join("%s" for _ in chunk)
+                conn.execute(f"UPDATE predictions SET status='judged' WHERE id IN ({ph})", chunk)
 
     return {"asof": asof, "open_evaluated": len(preds), "updated": updated,
             "judged": judged, "live_fail": live_fail, "live_success": live_success,

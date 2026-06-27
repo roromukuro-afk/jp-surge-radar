@@ -49,7 +49,10 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
         idx = len(df) - 1
     if idx < 30:  # 最低限の足
         return None
-    sub = df.iloc[: idx + 1].copy()
+    # 必要な最大ルックバックは52週高値の250本。2年(~500本)全部を毎回処理すると
+    # predict が銘柄数×全系列で遅くなるため、直近260本に限定する(特徴量は不変)。
+    lo = max(0, idx - 260)
+    sub = df.iloc[lo: idx + 1].copy()
     last = sub.iloc[-1]
     close = float(last["close"])
     if not close or close <= 0:
