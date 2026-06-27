@@ -33,7 +33,8 @@ def track_all(asof: str | None = None) -> dict:
     preds = [p for p in preds if p["code"] in priced]
     print(f"    [track] {len(preds)} open with prices, {skipped_no_price} skipped (no price)", flush=True)
 
-    judged = 0; updated = 0; live_fail = 0; live_success = 0
+    judged = 0; updated = 0; live_fail = 0; live_success = 0; danger_fail = 0
+    success_sab = {"S": 0, "A": 0, "B": 0}
     market_now = themes.market_regime(asof).get("score", 0.0)
 
     for p in preds:
@@ -104,11 +105,16 @@ def track_all(asof: str | None = None) -> dict:
             judged += 1
             if label:
                 live_success += 1
+                if result in success_sab:
+                    success_sab[result] += 1
             else:
                 live_fail += 1
+                if result == "danger_fail":
+                    danger_fail += 1
 
     return {"asof": asof, "open_evaluated": len(preds), "updated": updated,
-            "judged": judged, "live_fail": live_fail, "live_success": live_success}
+            "judged": judged, "live_fail": live_fail, "live_success": live_success,
+            "danger_fail": danger_fail, "success_sab": success_sab}
 
 
 def _add_teacher(pred, feats: dict, label: int, fail_tags: list[str], result: str) -> None:

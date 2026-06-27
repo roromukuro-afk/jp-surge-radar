@@ -116,7 +116,9 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
         for rank, r in enumerate(scored[:store_top], 1):
             f = r["_feats"]
             mat = r.get("_mat") or {}
-            top_mat = mat.get("top_category", "")
+            # top_material は種別+AIコメントを優先 (無ければ従来のカテゴリ)
+            top_mat = (mat.get("top_ai_comment") or mat.get("top_material_type")
+                       or mat.get("top_category", ""))
             conn.execute(
                 """INSERT INTO predictions
                    (run_date,code,name,base_price,rank,score,probability,category,
@@ -132,7 +134,17 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
                  db.j({k: v for k, v in f.items() if not k.startswith("_")}),
                  db.j({"gates": r["gates"], "themes": r["_themes"], "top_driver": r["top_driver"],
                        "upside": r["upside"], "market_score": market_score, "sub": r["sub"],
-                       "classify_path": r.get("classify_path", "")}),
+                       "classify_path": r.get("classify_path", ""),
+                       # --- 材料の質 (件数でなく中身) ---
+                       "material_quality": mat.get("material_quality", 0.0),
+                       "top_material_type": mat.get("top_material_type", ""),
+                       "top_ai_comment": mat.get("top_ai_comment", ""),
+                       "top_chart_reaction": mat.get("top_chart_reaction", 0.0),
+                       "top_volume_reaction": mat.get("top_volume_reaction", 0.0),
+                       "top_risk": mat.get("top_risk", 0.0),
+                       "top_connection": mat.get("top_connection", 0.0),
+                       "top_unpriced": mat.get("top_unpriced", 0.0),
+                       "n_materials": mat.get("n_materials", 0)}),
                  predictor.version or "rules", origin, top_mat),
             )
             stored += 1

@@ -409,19 +409,30 @@
     <tbody>
     {% for m in p.materials %}
     <tr class="border-t border-line/50">
-      <td class="py-1.5 pr-2 whitespace-nowrap text-slate-400 text-[11px]">{{m.date}}</td>
-      <td class="pr-2 whitespace-nowrap">
-        {% if m.category %}
-        <span class="chip text-[10px] {{ 'bg-good/20 text-good' if (m.sentiment or 0)>0 else ('bg-bad/20 text-bad' if (m.sentiment or 0)<0 else 'bg-slate-600/30') }}">{{m.category}}</span>
+      <td class="py-1.5 pr-2 whitespace-nowrap text-slate-400 text-[11px] align-top">{{m.date}}</td>
+      <td class="pr-2 whitespace-nowrap align-top">
+        {% set mt = m.material_type or m.category %}
+        {% if mt %}
+        <span class="chip text-[10px] {{ 'bg-good/20 text-good' if (m.sentiment or 0)>0 else ('bg-bad/20 text-bad' if (m.sentiment or 0)<0 else 'bg-slate-600/30') }}">{{mt}}</span>
         {% endif %}
       </td>
-      <td class="pr-2">{% if m.url %}<a href="{{m.url}}" target="_blank" rel="noopener" class="hover:underline text-slate-200">{{m.title}}</a>{% else %}<span class="text-slate-200">{{m.title}}</span>{% endif %}</td>
-      <td class="text-right pr-2 whitespace-nowrap">
+      <td class="pr-2 align-top">
+        {% if m.url %}<a href="{{m.url}}" target="_blank" rel="noopener" class="hover:underline text-slate-200">{{m.title}}</a>{% else %}<span class="text-slate-200">{{m.title}}</span>{% endif %}
+        {% if m.ai_comment %}<div class="text-[10px] text-slate-500 mt-0.5">🤖 {{m.ai_comment}}</div>{% endif %}
+        <div class="flex flex-wrap gap-1 mt-1">
+          {% if (m.unpriced or 0)>0 %}<span class="chip text-[9px] bg-slate-700/40 text-slate-300">未織込 {{ '%.0f'|format((m.unpriced or 0)*100) }}</span>{% endif %}
+          {% if (m.connect or 0)>0 %}<span class="chip text-[9px] bg-slate-700/40 text-slate-300">接続 {{ '%.0f'|format((m.connect or 0)*100) }}</span>{% endif %}
+          {% if (m.chart_reaction or 0)>0 %}<span class="chip text-[9px] bg-cyan-900/40 text-cyan-300">チャート反応 {{ '%.0f'|format((m.chart_reaction or 0)*100) }}</span>{% endif %}
+          {% if (m.volume_reaction or 0)>0 %}<span class="chip text-[9px] bg-violet-900/40 text-violet-300">出来高反応 {{ '%.0f'|format((m.volume_reaction or 0)*100) }}</span>{% endif %}
+          {% if (m.risk or 0)>0.3 %}<span class="chip text-[9px] bg-bad/20 text-bad">リスク {{ '%.0f'|format((m.risk or 0)*100) }}</span>{% endif %}
+        </div>
+      </td>
+      <td class="text-right pr-2 whitespace-nowrap align-top">
         <span class="{{ 'text-good font-bold' if (m.impact or 0)>0.7 else ('text-good' if (m.impact or 0)>0.5 else ('text-warn' if (m.impact or 0)>0.3 else 'text-slate-400')) }}">
           {{ '%.2f'|format(m.impact or 0) }}
         </span>
       </td>
-      <td class="text-right whitespace-nowrap">
+      <td class="text-right whitespace-nowrap align-top">
         <span class="{{ 'text-acc2' if (m.persistence or 0)>0.6 else ('text-slate-400' if (m.persistence or 0)>0.3 else 'text-slate-500') }}">
           {{ '%.1f'|format((m.persistence or 0)*100) }}%
         </span>
@@ -430,7 +441,7 @@
     {% endfor %}
     </tbody>
   </table>
-  <div class="text-[10px] text-slate-600 mt-1.5">影響=株価インパクト(0-1) / 持続=材料効果の継続性(%)</div>
+  <div class="text-[10px] text-slate-600 mt-1.5">未織込=サプライズ性 / 接続=銘柄直結度 / チャート・出来高反応=材料後の値動き / リスク=出尽くし・希薄化 / 影響=株価インパクト / 持続=継続性</div>
   </div>
   {% else %}
   <p class="text-sm text-slate-500 mt-2">この銘柄の登録済み開示はありません。</p>

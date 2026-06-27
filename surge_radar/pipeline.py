@@ -255,10 +255,8 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
         })
         print(f"[{datetime.now():%H:%M:%S}] pipeline OK - A/B={n_ab}", flush=True)
         if push_notify.is_configured():
-            step("push_notify", push_notify.send_all,
-                 title=f"急騰レーダー {asof} 更新完了",
-                 body=f"A/B候補 {n_ab}件。ランキングを確認。",
-                 url="/", tag="daily")
+            # 粒度別通知 (A候補/danger_fail/live成功/通常サマリ)
+            step("push_notify", push_notify.notify_pipeline_result, summary, asof)
     except Exception as e:  # noqa: BLE001
         tb = traceback.format_exc()
         _log_end(pipeline_jid, "error", message=tb)

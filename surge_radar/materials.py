@@ -295,10 +295,12 @@ def fetch_tdnet_range(days: int = 14, max_pages: int = 5, per_page: int = 200,
 def store_materials(code: str, items: list[dict]) -> int:
     if not items:
         return 0
+    from . import materials_analysis as ma
     n = 0
     with db.cursor() as conn:
         for it in items:
             title = it.get("title", "")
+            source = it.get("source", "tdnet")
             # 同一(code,date,title)の重複はスキップ
             dup = conn.execute(
                 "SELECT 1 FROM materials WHERE code=%s AND date=%s AND title=%s LIMIT 1",
@@ -306,11 +308,22 @@ def store_materials(code: str, items: list[dict]) -> int:
             if dup:
                 continue
             cls = classify_material(title)
+            a = ma.analyze(title, body=it.get("body", "") or "", source=source, code=code)
+            # 旧分類(category)が空なら material_type を流用、スコアは強い方を採用
+            category = cls["category"] or a["material_type"]
+            impact = max(cls["impact"], a["impact"])
+            persistence = max(cls["persistence"], a["persistence"])
+            sentiment = cls["sentiment"] if cls["sentiment"] != 0 else a["sentiment"]
+            risk = a["dilution_risk"]
+            ai_comment = ma.make_ai_comment(a, {"reaction_known": 0})
             conn.execute(
-                """INSERT INTO materials(code,date,source,category,title,url,sentiment,impact,persistence)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (code, it.get("date"), it.get("source", "tdnet"), cls["category"],
-                 title, it.get("url"), cls["sentiment"], cls["impact"], cls["persistence"]),
+                """INSERT INTO materials
+                   (code,date,source,category,title,url,body,sentiment,impact,persistence,
+                    unpriced,connect,material_type,risk,ai_comment,updated_at)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)""",
+                (code, it.get("date"), source, category, title, it.get("url"),
+                 it.get("body", "") or "", sentiment, impact, persistence,
+                 a["unpriced"], a["connection"], a["material_type"], risk, ai_comment),
             )
             n += 1
     return n
@@ -320,13 +333,35 @@ def _empty_material_score() -> dict:
     return {"material_raw": 0.0, "pos_impact": 0.0, "neg_impact": 0.0,
             "has_fresh_material": 0, "last_material_days": None,
             "dilution_flag": 0, "going_concern_flag": 0, "n_materials": 0,
-            "top_category": "", "top_title": "", "themes": []}
+            "top_category": "", "top_title": "", "themes": [],
+            "material_quality": 0.0, "top_material_type": "", "top_ai_comment": "",
+            "top_unpriced": 0.0, "top_connection": 0.0, "top_chart_reaction": 0.0,
+            "top_volume_reaction": 0.0, "top_risk": 0.0}
+
+
+def _quality(r: dict) -> float:
+    """1材料の質スコア (0..1): 接続度×(未織込×持続×反応) ×(1-出尽くし/希薄化)。
+
+    信頼度だけでなく未織り込み感・持続性・接続度・チャート反応・出来高反応を重視し、
+    出尽くし/希薄化リスクで減点する。新カラムが無い行でも0で安全に動く。
+    """
+    unp = float(r.get("unpriced") or 0)
+    per = float(r.get("persistence") or 0)
+    conn = float(r.get("connect") or 0) or 0.6
+    cr = float(r.get("chart_reaction") or 0)
+    vr = float(r.get("volume_reaction") or 0)
+    risk = float(r.get("risk") or 0)
+    core = 0.40 * unp + 0.25 * per + 0.20 * cr + 0.15 * vr
+    q = conn * core * (1.0 - 0.5 * risk)
+    return max(0.0, min(q, 1.0))
 
 
 def score_material_rows(rows: list[dict], asof: str) -> dict:
     """既に取得済みの材料行リストからスコアを計算 (単一/バルク共通)。
 
-    rows は date DESC 順で date,category,title,sentiment,impact,persistence を持つこと。
+    rows は date DESC 順。最低限 date,category,title,sentiment,impact,persistence を持つ。
+    新カラム (unpriced,connect,chart_reaction,volume_reaction,risk,material_type,ai_comment)
+    があれば material_quality と top_* 表示フィールドも算出する (モデル特徴量は不変)。
     """
     themes_found: list[str] = []
     for r in rows:
@@ -352,6 +387,11 @@ def score_material_rows(rows: list[dict], asof: str) -> dict:
                        for c in ["新株予約権", "第三者割当", "公募増資", "ワラント", "希薄化"]))
     going_concern = int(any("継続企業" in (r["category"] or "") for r in rows))
 
+    # 質スコア: 最良の好材料を採用 (接続度×未織込×反応 ベース)
+    pool = pos or rows
+    best = max(pool, key=_quality)
+    material_quality = round(_quality(best), 3)
+
     # 上位材料タイトル(理由表示用)
     top_row = pos[0] if pos else rows[0]
     top_title = (top_row["title"] or "")[:60]
@@ -368,6 +408,15 @@ def score_material_rows(rows: list[dict], asof: str) -> dict:
         "top_category": pos[0]["category"] if pos else (rows[0]["category"] or ""),
         "top_title": top_title,
         "themes": themes_found,
+        # --- 新: 質スコア + 表示フィールド (モデル特徴量には未使用) ---
+        "material_quality": material_quality,
+        "top_material_type": best.get("material_type") or "",
+        "top_ai_comment": best.get("ai_comment") or "",
+        "top_unpriced": round(float(best.get("unpriced") or 0), 3),
+        "top_connection": round(float(best.get("connect") or 0), 3),
+        "top_chart_reaction": round(float(best.get("chart_reaction") or 0), 3),
+        "top_volume_reaction": round(float(best.get("volume_reaction") or 0), 3),
+        "top_risk": round(float(best.get("risk") or 0), 3),
     }
 
 
@@ -376,7 +425,8 @@ def recent_material_score(code: str, asof: str, lookback_days: int = 25) -> dict
     start = (datetime.strptime(asof, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     with db.cursor() as conn:
         rows = conn.execute(
-            "SELECT date,category,title,sentiment,impact,persistence FROM materials "
+            "SELECT date,category,title,sentiment,impact,persistence,unpriced,connect,"
+            "chart_reaction,volume_reaction,risk,material_type,ai_comment FROM materials "
             "WHERE code=%s AND date BETWEEN %s AND %s ORDER BY date DESC",
             (code, start, asof),
         ).fetchall()
@@ -399,7 +449,8 @@ def recent_material_scores_bulk(codes: list[str], asof: str, lookback_days: int 
         ph = ",".join(["%s"] * len(part))
         with db.cursor() as conn:
             rows = conn.execute(
-                f"SELECT code,date,category,title,sentiment,impact,persistence FROM materials "
+                f"SELECT code,date,category,title,sentiment,impact,persistence,unpriced,connect,"
+                f"chart_reaction,volume_reaction,risk,material_type,ai_comment FROM materials "
                 f"WHERE code IN ({ph}) AND date BETWEEN %s AND %s ORDER BY code, date DESC",
                 tuple(part) + (start, asof),
             ).fetchall()

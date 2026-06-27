@@ -627,6 +627,22 @@ def _migrate_pg(conn: _PGConn) -> None:
             "ON teacher_samples(code, t0_date)"
         )
 
+    # materials: 材料品質分析カラム
+    r = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='materials'"
+    ).fetchall()
+    existing = {row["column_name"] for row in r}
+    for col, ddl in (
+        ("material_type", "ALTER TABLE materials ADD COLUMN material_type TEXT"),
+        ("chart_reaction", "ALTER TABLE materials ADD COLUMN chart_reaction REAL"),
+        ("volume_reaction", "ALTER TABLE materials ADD COLUMN volume_reaction REAL"),
+        ("risk", "ALTER TABLE materials ADD COLUMN risk REAL"),
+        ("ai_comment", "ALTER TABLE materials ADD COLUMN ai_comment TEXT"),
+        ("updated_at", "ALTER TABLE materials ADD COLUMN updated_at TIMESTAMPTZ"),
+    ):
+        if col not in existing:
+            conn._cur.execute(ddl)
+
 
 def _migrate_sqlite(conn: _SQLiteConn) -> None:
     """SQLite: カラム追加・インデックスマイグレーション。"""
@@ -653,6 +669,19 @@ def _migrate_sqlite(conn: _SQLiteConn) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_teacher_code_date "
             "ON teacher_samples(code, t0_date)"
         )
+
+    # materials: 材料品質分析カラム
+    mat_cols = {r[1] for r in raw.execute("PRAGMA table_info(materials)").fetchall()}
+    for col, ddl in (
+        ("material_type", "ALTER TABLE materials ADD COLUMN material_type TEXT"),
+        ("chart_reaction", "ALTER TABLE materials ADD COLUMN chart_reaction REAL"),
+        ("volume_reaction", "ALTER TABLE materials ADD COLUMN volume_reaction REAL"),
+        ("risk", "ALTER TABLE materials ADD COLUMN risk REAL"),
+        ("ai_comment", "ALTER TABLE materials ADD COLUMN ai_comment TEXT"),
+        ("updated_at", "ALTER TABLE materials ADD COLUMN updated_at TEXT"),
+    ):
+        if col not in mat_cols:
+            raw.execute(ddl)
 
 
 @contextmanager

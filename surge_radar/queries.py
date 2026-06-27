@@ -61,8 +61,9 @@ def prediction_detail(pid: int) -> dict | None:
             return None
         oc = conn.execute("SELECT * FROM prediction_outcomes WHERE prediction_id=%s", (pid,)).fetchone()
         mats = conn.execute(
-            "SELECT date,category,title,url,sentiment,impact,persistence FROM materials WHERE code=%s "
-            "ORDER BY date DESC LIMIT 15", (p["code"],)).fetchall()
+            "SELECT date,category,title,url,sentiment,impact,persistence,material_type,"
+            "unpriced,connect,chart_reaction,volume_reaction,risk,ai_comment "
+            "FROM materials WHERE code=%s ORDER BY date DESC LIMIT 15", (p["code"],)).fetchall()
         prices = conn.execute(
             "SELECT date,open,high,low,close,volume FROM prices WHERE code=%s ORDER BY date DESC LIMIT 120",
             (p["code"],)).fetchall()

@@ -74,3 +74,49 @@ def send_all(title: str, body: str, url: str = "/", tag: str = "pipeline") -> di
                 conn.execute("DELETE FROM push_subscriptions WHERE endpoint=%s", (ep,))
 
     return {"sent": sent, "failed": failed, "expired_removed": len(dead)}
+
+
+def notify_pipeline_result(summary: dict, asof: str) -> list[dict]:
+    """daily 成功時の粒度別通知。購読者0なら send_all 側で no-op。
+
+    トリガ: A候補発生 / B候補数 / 高material_quality / live S/A/B成功 / danger_fail。
+    複数該当時は重要度の高いものから個別に送る。
+    """
+    results = []
+    if not is_configured():
+        return [{"sent": 0, "reason": "VAPID not configured"}]
+    pred = summary.get("predict") or {}
+    cats = pred.get("categories") or {}
+    a = cats.get("A", 0) or 0
+    b = cats.get("B", 0) or 0
+    c = cats.get("C", 0) or 0
+    track = summary.get("track") or {}
+    danger = track.get("danger_fail", 0) or 0
+    sab = track.get("success_sab") or {}
+    succ = (sab.get("S", 0) + sab.get("A", 0) + sab.get("B", 0)) if sab else 0
+
+    # 1) A候補は最重要
+    if a > 0:
+        results.append(send_all(
+            title=f"🚀 A候補 {a}件 発生 ({asof})",
+            body=f"今すぐ買い検討型 {a}件 / B {b}件 / C {c}件。ランキング確認。",
+            url="/?category=A", tag="alert-A"))
+    # 2) danger_fail 発生
+    if danger > 0:
+        results.append(send_all(
+            title=f"⚠️ danger_fail {danger}件",
+            body=f"{asof}: 危険失敗を検出。失敗教師データに追加。",
+            url="/failures", tag="alert-danger"))
+    # 3) live 成功(S/A/B)
+    if succ > 0:
+        results.append(send_all(
+            title=f"✅ live予測 成功 {succ}件 ({asof})",
+            body=f"S{sab.get('S',0)}/A{sab.get('A',0)}/B{sab.get('B',0)} が+20%到達。",
+            url="/history", tag="alert-success"))
+    # 4) 通常更新サマリ (A候補が無い場合のみ単独で送る)
+    if a == 0:
+        results.append(send_all(
+            title=f"急騰レーダー {asof} 更新完了",
+            body=f"B候補 {b}件 / C候補 {c}件。ランキングを確認。",
+            url="/", tag="daily"))
+    return results
