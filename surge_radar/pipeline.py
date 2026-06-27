@@ -190,8 +190,11 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
               price_pause: float = 0.25, material_pause: float = 0.3,
               material_days: int = 14, material_max_pages: int = 5,
               material_time_limit: float = 120.0,
-              update_universe: bool = True) -> dict:
-    """日次フル実行。limit で銘柄数を制限可(テスト/初回向け)。"""
+              update_universe: bool = True, predict_store: bool = True) -> dict:
+    """日次フル実行。limit で銘柄数を制限可(テスト/初回向け)。
+
+    predict_store=False のとき predict は保存せず本番予測を壊さない (スモーク用)。
+    """
     db.init_db()
     asof = datetime.now().strftime("%Y-%m-%d")
     summary: dict = {"asof": asof}
@@ -231,8 +234,10 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
             summary["retrain"] = step("train", train.retrain, f"daily {asof}")
 
         # --- CRITICAL: predict must succeed ---
+        # limit はスモークテスト時に predict も先頭 limit 件に制限する
         summary["predict"] = step_critical("predict", predict.generate, asof,
-                                           use_materials=not skip_materials)
+                                           use_materials=not skip_materials, limit=limit,
+                                           store=predict_store)
 
         # top-code material enrichment: warning only
         if not skip_materials:

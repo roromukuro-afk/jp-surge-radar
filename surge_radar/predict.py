@@ -22,10 +22,14 @@ def _is_backfill(asof: str) -> bool:
 
 
 def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
-             use_materials: bool = True, asof: str | None = None, on_progress=None) -> dict:
+             use_materials: bool = True, asof: str | None = None, on_progress=None,
+             limit: int | None = None, store: bool = True) -> dict:
     """
     asof を指定すると、その日付(以前の直近営業日)時点で評価する過去バックフィル予測。
     run_date は予測の保存日(=T0)。指定なしは asof と同じ/本日。
+    limit を指定すると評価銘柄を先頭 limit 件に制限する (スモークテスト用)。
+    store=False のとき DB に保存せず (_clear_today もしない)。本番データを壊さずに
+    コードパスだけ検証するスモークテスト用。
     """
     asof = asof or run_date or datetime.now().strftime("%Y-%m-%d")
     run_date = run_date or asof
@@ -44,6 +48,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     priced = set(ingest.available_codes())
     n_before = len(codes)
     codes = [c for c in codes if c in priced]
+    if limit:
+        codes = codes[:limit]
     print(f"    [predict] {len(codes)} priced codes (of {n_before} universe)", flush=True)
 
     # バルクプリロード: 銘柄ごとのDB往復を排除 (load_history/materials/sectors)。
@@ -108,6 +114,15 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
 
     # ランキング: 除外(E/ゲート)を下げ、composite降順
     scored.sort(key=lambda r: (r["category"] == "E", -r["score"]))
+
+    # スモークテスト (store=False): 本番予測を壊さず評価のみ
+    if not store:
+        cat_counts = {}
+        for r in scored:
+            cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
+        return {"run_date": run_date, "evaluated": len(scored), "skipped": skipped,
+                "stored": 0, "model_version": predictor.version or "rules",
+                "categories": cat_counts, "market_score": market_score, "dry_run": True}
 
     # 保存: 全評価銘柄 (A/B/C/D/E全対象銘柄分類要件)
     _clear_today(run_date)
