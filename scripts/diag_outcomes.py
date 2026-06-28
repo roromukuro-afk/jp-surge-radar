@@ -138,3 +138,31 @@ if df:
     print(f"  共通failure_tags: {dict(sorted(tagc.items(), key=lambda kv: -kv[1]))}")
 else:
     print("  danger_fail なし")
+
+print("\n[11] D/E→成功(拾い漏れ)分析  ※B/C条件が厳しすぎないかの判断材料 (n小のうちは変更しない)")
+de = [r for r in rows if r["category"] in ("D", "E")]
+de_succ = [r for r in de if r["result_class"] in SUCCESS]
+print(f"  D/E判定 {len(de)}件中 成功(S/A/B) {len(de_succ)}件"
+      + (f" = 拾い漏れ率 {len(de_succ)/len(de)*100:.0f}%" if de else ""))
+for r in de_succ:
+    sigs = []
+    if (r["chart_score"] or 0) > 0.4:
+        sigs.append("chart")
+    if (r["volume_score"] or 0) > 0.4:
+        sigs.append("volume")
+    if (r["similarity_score"] or 0) >= 0.9:
+        sigs.append("AI類似")
+    if (r["material_score"] or 0) > 0.05:
+        sigs.append("材料")
+    print(f"   {r['code']} [{r['category']}→{r['result_class']}] path={r['_path']} "
+          f"mq={r['_mq']:.2f} mat={(r['material_score'] or 0):.2f} chart={(r['chart_score'] or 0):.2f} "
+          f"vol={(r['volume_score'] or 0):.2f} sim={(r['similarity_score'] or 0):.2f} "
+          f"up20={(r['max_up_20d'] or 0)*100:.0f}%")
+    print(f"      効いた信号: {sigs or ['弱シグナルのみ']} | 材料なし={(r['material_score'] or 0) <= 0.05} | "
+          f"なぜB/C外: chart/vol/材料が分類閾値未満だった可能性")
+# 共通点サマリ
+if len(de_succ) >= 2:
+    nomat = sum(1 for r in de_succ if (r["material_score"] or 0) <= 0.05)
+    ai = sum(1 for r in de_succ if (r["similarity_score"] or 0) >= 0.9)
+    avgmq = sum(r["_mq"] for r in de_succ) / len(de_succ)
+    print(f"  共通点: 材料なし {nomat}/{len(de_succ)} | AI類似>=0.9 {ai}/{len(de_succ)} | 平均mq {avgmq:.2f}")
