@@ -25,17 +25,47 @@ def is_configured() -> bool:
     return bool(VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY)
 
 
+_vapid_obj = None
+
+
+def _vapid_key():
+    """VAPID秘密鍵を pywebpush が扱える形にする。
+
+    PEM文字列をそのまま渡すと pywebpush は raw鍵として base64デコードを試みて失敗する
+    (ASN.1 parsing error)。PEMなら py_vapid.Vapid オブジェクトに変換して渡す。
+    PEM以外(base64 raw)はそのまま文字列を返す。結果はキャッシュ。
+    """
+    global _vapid_obj
+    if _vapid_obj is not None:
+        return _vapid_obj
+    key = VAPID_PRIVATE_KEY
+    if "BEGIN" in key:  # PEM
+        try:
+            try:
+                from py_vapid import Vapid02 as _Vapid
+            except ImportError:
+                from py_vapid import Vapid as _Vapid
+            _vapid_obj = _Vapid.from_pem(key.encode())
+            return _vapid_obj
+        except Exception:
+            pass
+    _vapid_obj = key  # raw base64 などはそのまま
+    return _vapid_obj
+
+
 def send_all(title: str, body: str, url: str = "/", tag: str = "pipeline") -> dict:
     """全購読者に Web Push 通知を送信。返り値は {sent, failed, reason}。"""
     if not is_configured():
         return {"sent": 0, "failed": 0, "reason": "VAPID keys not configured"}
 
     try:
-        from pywebpush import webpush, WebPushException
+        from pywebpush import webpush, WebPushException  # noqa: F401
     except ImportError:
         return {"sent": 0, "failed": 0, "reason": "pywebpush not installed"}
 
     from . import db
+
+    vapid_key = _vapid_key()
 
     with db.cursor() as conn:
         subs = conn.execute(
@@ -58,7 +88,7 @@ def send_all(title: str, body: str, url: str = "/", tag: str = "pipeline") -> di
                     "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
                 },
                 data=payload,
-                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_private_key=vapid_key,
                 vapid_claims={"sub": f"mailto:{VAPID_ADMIN_EMAIL}"},
             )
             sent += 1

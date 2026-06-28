@@ -174,13 +174,15 @@ teacher_status → 必要時retrain → predict → top候補kabutan enrich → 
 | Service Worker (push/notificationclick/showNotification) | ✅ |
 | /push/subscribe 保存 | ✅ (検証済) |
 | 粒度別トリガ | ✅ A候補/danger_fail/live S・A・B成功/日次サマリ/pipeline失敗 |
-| **購読者** | **0人** |
-| **実送信(delivery)** | ⚠️ **未確認**(購読者0のため。実機での購読が必要) |
-| iOS制約 | PWAをホーム画面追加後でないとPush不可(iOS 16.4+)。要実機 |
-| 代替案 | iOSで困難なら LINE Notify / メール / GitHub Actions通知を検討(要キー) |
+| **購読者** | **1人**(iPhone iOS 18.7, Apple Push web.push.apple.com) |
+| **実送信(delivery)** | ✅ **成功**(テスト通知 status 201。send_all/notify_pipeline_result とも sent=1 確認) |
+| iOS制約 | PWAをホーム画面追加後のみPush可(iOS 16.4+)。実機で確認済 |
+| 代替案 | 不要(iOS実機で配信成功) |
 
-実機手順: スマホでURLを開く→ホーム画面追加→アプリ起動→通知ベルON→許可→push_subscriptions保存→
-次のdaily(または手動dispatch)で通知配信。
+実機購読: 完了 (2026-06-28)。テスト通知: 成功。
+**重要修正**: pywebpush に VAPID秘密鍵をPEM文字列で渡すと ASN.1 parsing error で失敗するため、
+`push_notify._vapid_key()` で py_vapid.Vapid オブジェクトに変換して渡すよう修正。
+これにより daily の通知(成功/失敗/A候補/danger_fail/live成功)が実際に配信される。
 
 ---
 
