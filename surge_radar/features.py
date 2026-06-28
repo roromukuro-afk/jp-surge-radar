@@ -58,8 +58,11 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
     if not close or close <= 0:
         return None
 
-    cf = indicators.chart_features(sub)
-    vf = indicators.volume_features(sub)
+    # 指標を1回だけ計算し、chart/volume と rsi/dev で共有する
+    # (旧来は compute_indicators が build_features 内で2〜3回走っていた)
+    ind = indicators.compute_indicators(sub)
+    cf = indicators.chart_features(ind)
+    vf = indicators.volume_features(ind)
 
     feats: dict = {}
     feats.update({k: cf.get(k, 0.0) for k in [
@@ -70,7 +73,7 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
         "near_breakout", "broke_resistance", "gap_up", "pct_from_52w_high",
         "downtrend_risk", "rebound_capped", "upper_wick_ratio", "high_zone_upper_wick",
     ]})
-    di = indicators.compute_indicators(sub).iloc[-1]
+    di = ind.iloc[-1]
     feats["rsi14"] = float(di["rsi14"]) if pd.notna(di["rsi14"]) else 50.0
     feats["dev25"] = float(di["dev25"]) if pd.notna(di["dev25"]) else 0.0
 

@@ -28,6 +28,32 @@ def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     return tr.rolling(n).mean()
 
 
+def rsi_dev_last(close: pd.Series, n_rsi: int = 14, n_ma: int = 25) -> tuple[float, float]:
+    """最終バーの rsi14 と dev25 だけを安価に計算する。
+
+    compute_indicators は11列を全系列に付与するが、build_features が使うのは
+    最終行の rsi14/dev25 のみ。predict を全銘柄で回すとこの無駄が効くため分離。
+    値は compute_indicators(...).iloc[-1] と一致する。
+    """
+    c = np.asarray(close.values if hasattr(close, "values") else close, dtype=float)
+    rsi_v = 50.0
+    if len(c) >= n_rsi + 1:
+        d = np.diff(c[-(n_rsi + 1):])
+        up = d[d > 0].sum() / n_rsi
+        dn = (-d[d < 0]).sum() / n_rsi
+        if dn == 0:
+            rsi_v = 100.0 if up > 0 else 50.0
+        else:
+            rs = up / dn
+            rsi_v = 100.0 - 100.0 / (1.0 + rs)
+    dev_v = 0.0
+    if len(c) >= 12:
+        ma = c[-n_ma:].mean()
+        if ma:
+            dev_v = (c[-1] - ma) / ma
+    return float(rsi_v), float(dev_v)
+
+
 def slope(series: pd.Series, n: int = 10) -> float:
     """直近n本の線形回帰の傾き（価格に対する%/日）。"""
     s = series.dropna().tail(n)
@@ -40,7 +66,13 @@ def slope(series: pd.Series, n: int = 10) -> float:
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """日足DF(date,open,high,low,close,volume,turnover)に指標列を付与。"""
+    """日足DF(date,open,high,low,close,volume,turnover)に指標列を付与。
+
+    既に指標列がある DataFrame を渡された場合は再計算しない(冪等)。
+    build_features は chart/volume 両方からこれを呼ぶため、1回計算して使い回す。
+    """
+    if "ma25" in df.columns and "rsi14" in df.columns and "tvma25" in df.columns:
+        return df
     df = df.copy().reset_index(drop=True)
     c, v = df["close"], df["volume"]
     df["ma5"] = sma(c, 5)
