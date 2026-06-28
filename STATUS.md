@@ -1,5 +1,8 @@
 # Surge Radar — 本番状態レポート
-最終更新: 2026-06-28 (bootstrap完了・材料分析アップグレード・全銘柄predict)
+最終更新: 2026-06-28 / **✅ 本番運用版 完成 — 運用・改善フェーズへ移行**
+
+> フェーズ: 「新規実装」→「運用・改善」。今後は live予測の5/10/20営業日成否を追跡し、
+> 当たり/外れの理由(材料継続・出来高継続・チャート・AI類似偏重)を失敗教師データ化して再学習する。
 
 > 機密情報 (DATABASE_URL / VAPID_PRIVATE_KEY / EDINET_API_KEY 等) はこのファイルに書かない。
 > 値は `.env` / GitHub Secrets / Vercel Environment Variables のみで管理。
@@ -196,14 +199,29 @@ teacher_status → 必要時retrain → predict → top候補kabutan enrich → 
 
 ---
 
-## 残課題 (正直版)
+## 運用・改善フェーズ ロードマップ
 
-- [ ] **EDINET_API_KEY 未設定** → EDINET材料0件。ユーザーが無料キー取得で解消
-- [ ] 外部ニュース(Yahoo/Reuters)を daily に組込み(コードはあり)
-- [ ] 企業IR本文 / Kabutan本文の取得(現状は見出しのみ、body=0)
-- [ ] Push購読者0 → 実機でホーム画面追加+購読+通知到達テスト
-- [ ] 材料反応は価格更新ごとに再計算(daily/週次でbackfill自動化を検討)
-- [ ] daily の B/C で材料なし候補(AI類似のみ)の比率を継続監視
+### 優先1: EDINET_API_KEY (ユーザー操作待ち)
+EDINET API v2 はサブスクリプションキー必須。workflows は `EDINET_API_KEY` を Secret から
+渡すよう配線済(未設定なら空→スキップ)。**ユーザーが https://api.edinet-fsa.go.jp で無料キー取得後**:
+1. `gh secret set EDINET_API_KEY` (GitHub Actions用)
+2. Vercel env に `EDINET_API_KEY` (web側で使う場合)
+3. daily実行 → EDINET材料件数 / 銘柄紐付け / material_type / material_quality 反映を確認
+
+### 優先2: Push通知 実機テスト (実スマホ必要)
+基盤完成・購読者0。実機でホーム画面追加→通知許可→購読→push_subscriptions増加→
+A候補/danger_fail/live成功通知の到達を確認。iOS制約時は LINE Notify / メール通知を代替検討。
+
+### 優先3: live予測の追跡 (自動・データ蓄積待ち)
+daily の track が open予測を5/10/20営業日で判定し、live_fail/live_success/danger_fail を
+教師データ化→必要時retrain。classify_path別・material_quality別・材料あり/なし別の成績を蓄積。
+
+### 優先4: 予測精度改善 (蓄積後)
+B_very_strong_ai / B_material_volume / C_material_chart / AI類似のみB/C / 材料なしB/Cの
+danger_fail率 を監視。成績の悪い分類条件は「緩和でなく厳格化」。
+
+### 優先5: 材料ソース拡張 (後回し)
+EDINET → 企業IR本文 → 決算短信本文 → 外部ニュース(Reuters等) → 政策/補助金。急がない。
 
 ## 次に自動実行される予定
 - 毎営業日 16:40 JST (cron) に daily.yml(差分price→材料→track→retrain→predict→push→job_logs)
