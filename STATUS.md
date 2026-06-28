@@ -175,7 +175,7 @@ teacher_status → 必要時retrain → predict → top候補kabutan enrich → 
 | /push/subscribe 保存 | ✅ (検証済) |
 | 粒度別トリガ | ✅ A候補/danger_fail/live S・A・B成功/日次サマリ/pipeline失敗 |
 | **購読者** | **1人**(iPhone iOS 18.7, Apple Push web.push.apple.com) |
-| **実送信(delivery)** | ✅ **成功**(テスト通知 status 201。send_all/notify_pipeline_result とも sent=1 確認) |
+| **実送信(delivery)** | ✅ **成功・実機到達ユーザー確認済**(2026-06-28。status 201, send_all/notify_pipeline_result sent=1) |
 | iOS制約 | PWAをホーム画面追加後のみPush可(iOS 16.4+)。実機で確認済 |
 | 代替案 | 不要(iOS実機で配信成功) |
 
