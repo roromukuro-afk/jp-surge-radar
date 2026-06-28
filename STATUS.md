@@ -203,12 +203,14 @@ teacher_status → 必要時retrain → predict → top候補kabutan enrich → 
 
 ## 運用・改善フェーズ ロードマップ
 
-### 優先1: EDINET_API_KEY (ユーザー操作待ち)
-EDINET API v2 はサブスクリプションキー必須。workflows は `EDINET_API_KEY` を Secret から
-渡すよう配線済(未設定なら空→スキップ)。**ユーザーが https://api.edinet-fsa.go.jp で無料キー取得後**:
-1. `gh secret set EDINET_API_KEY` (GitHub Actions用)
-2. Vercel env に `EDINET_API_KEY` (web側で使う場合)
-3. daily実行 → EDINET材料件数 / 銘柄紐付け / material_type / material_quality 反映を確認
+### EDINET連携: optional / pending (保留)
+EDINET API v2 はサブスクリプションキー必須だが、**EDINET側の白画面問題でキー取得が現在不可** → 保留。
+**キー未設定でもアプリ・daily・レビュー処理は一切止まらない**:
+- materials ステップは EDINET をスキップし、ログに `EDINET_API_KEY not configured; skipping EDINET fetch` のみ出力(エラー扱いにしない)。
+- TDnet / 価格・出来高 / テーマで運用継続。diag_outcomes.py 等のレビューにも影響なし。
+- workflows は `EDINET_API_KEY` を Secret から渡す配線済(未設定なら空→スキップ)。
+**将来キー取得後**: `gh secret set EDINET_API_KEY` (+必要ならVercel env) → daily実行で
+EDINET材料件数 / 銘柄紐付け / material_type / material_quality 反映を確認するだけで有効化。
 
 ### 優先2: Push通知 実機テスト (実スマホ必要)
 基盤完成・購読者0。実機でホーム画面追加→通知許可→購読→push_subscriptions増加→

@@ -159,21 +159,27 @@ def collect_materials_step(codes: list[str], pause: float = 0.3, days: int = 14,
                     ok += 1
         disclosures_seen = sum(len(v) for v in by_code.values())
 
-    # ---- EDINET 公式API (無料・登録不要。直近3日分を取得) ----
-    try:
-        for d in range(0, min(days, 3)):
-            dt_str = (datetime.now() - timedelta(days=d)).strftime("%Y-%m-%d")
-            edinet_by = materials.fetch_edinet_docs(dt_str)
-            for code, items in edinet_by.items():
-                if codeset and code not in codeset:
-                    continue
-                if items:
-                    n = materials.store_materials(code, items)
-                    total += n
-                    if n > 0:
-                        ok += 1
-    except Exception as e:
-        print(f"    [EDINET] error: {e}")
+    # ---- EDINET 公式API (任意・キー取得後に有効化。直近3日分を取得) ----
+    # EDINET API v2 はサブスクリプションキー必須。未設定なら静かにスキップし
+    # daily 全体は失敗させない (材料は TDnet/Kabutan/価格・出来高で継続)。
+    import os
+    if not os.environ.get("EDINET_API_KEY", "").strip():
+        print("    [EDINET] EDINET_API_KEY not configured; skipping EDINET fetch", flush=True)
+    else:
+        try:
+            for d in range(0, min(days, 3)):
+                dt_str = (datetime.now() - timedelta(days=d)).strftime("%Y-%m-%d")
+                edinet_by = materials.fetch_edinet_docs(dt_str)
+                for code, items in edinet_by.items():
+                    if codeset and code not in codeset:
+                        continue
+                    if items:
+                        n = materials.store_materials(code, items)
+                        total += n
+                        if n > 0:
+                            ok += 1
+        except Exception as e:
+            print(f"    [EDINET] error (non-fatal): {e}", flush=True)
 
     return {"codes_with_materials": ok, "materials_stored": total,
             "disclosures_seen": disclosures_seen,

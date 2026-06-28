@@ -106,12 +106,18 @@ powershell -ExecutionPolicy Bypass -File scripts\register_task.ps1
 | 銘柄一覧 | JPX 公開 `data_j.xls` | 無料・登録不要 |
 | 株価 OHLCV | Yahoo Finance chart API | 無料。`yfinance` ラッパに依存しない直接実装 |
 | 開示(材料) | TDnet (yanoshin WebAPI) | 無料 JSON |
+| 開示(EDINET) | EDINET API v2(任意) | **キー取得後に有効化**(下記) |
 | テーマ/地合い | ETF/指数(Yahoo) | TOPIX・グロース250・半導体・SOX 等 |
 | 高品質データ | J-Quants(任意) | 環境変数でトークン設定時に併用 |
 
 ### 任意設定(環境変数)
 - `JQUANTS_REFRESH_TOKEN`(または `JQUANTS_MAIL`/`JQUANTS_PASSWORD`): J-Quants 併用
 - `ANTHROPIC_API_KEY` + `SURGE_ENABLE_LLM=1`: 上位候補のみ材料 LLM 深掘り(コスト発生のため既定オフ)
+- `EDINET_API_KEY`: **EDINET 連携(任意・pending)**。EDINET API v2 は無料サブスクリプションキー必須。
+  **キー未設定でもアプリ・daily・レビュー処理は止まらず**、ログに
+  `EDINET_API_KEY not configured; skipping EDINET fetch` と出してスキップする。
+  キー取得後に環境変数 / GitHub Secret / Vercel env に設定すると EDINET 材料が自動で有効化される。
+  現状は TDnet / 価格・出来高 / テーマで運用継続。
 
 ---
 
