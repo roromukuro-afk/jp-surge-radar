@@ -166,3 +166,20 @@ if len(de_succ) >= 2:
     ai = sum(1 for r in de_succ if (r["similarity_score"] or 0) >= 0.9)
     avgmq = sum(r["_mq"] for r in de_succ) / len(de_succ)
     print(f"  共通点: 材料なし {nomat}/{len(de_succ)} | AI類似>=0.9 {ai}/{len(de_succ)} | 平均mq {avgmq:.2f}")
+
+print("\n[12] 低AI類似×出来高+材料 主導の成功割合  ※B分類がAI類似に寄りすぎていないかの判断材料")
+succ = [r for r in rows if r["result_class"] in SUCCESS]
+if succ:
+    # AI類似 < 0.7 かつ (出来高 or 材料) が効いて上がった成功
+    low_ai_vm = [r for r in succ
+                 if (r["similarity_score"] or 0) < 0.7
+                 and ((r["volume_score"] or 0) > 0.4 or (r["material_score"] or 0) > 0.05)]
+    high_ai = [r for r in succ if (r["similarity_score"] or 0) >= 0.9]
+    print(f"  全成功 {len(succ)}件中:")
+    print(f"   低AI類似(<0.7)×出来高/材料主導の成功: {len(low_ai_vm)} ({len(low_ai_vm)/len(succ)*100:.0f}%)"
+          " ← 拾い漏れ/AI偏重の兆候")
+    print(f"   高AI類似(>=0.9)主導の成功: {len(high_ai)} ({len(high_ai)/len(succ)*100:.0f}%)")
+    print("  ※ 低AI類似×出来高/材料の比率が高いほど、B分類のAI類似偏重で急騰を拾い漏れている可能性。")
+    print("    ただし十分な件数(目安: 各区分20件以上)が揃うまで条件は変更しない。")
+else:
+    print("  成功判定なし")
