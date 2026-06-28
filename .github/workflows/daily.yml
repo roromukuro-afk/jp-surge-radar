@@ -17,7 +17,8 @@ on:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # 通常は最適化後 ~20-25分で完了。CIランナーの個体差に対する安全余裕として75分。
+    timeout-minutes: 75
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
