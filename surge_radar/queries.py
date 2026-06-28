@@ -171,6 +171,51 @@ def job_logs(limit: int = 60) -> list[dict]:
     return out
 
 
+def material_coverage(run_date: str | None = None) -> dict:
+    """ランキングの材料カバレッジ。材料込み/材料なしを明確化する。
+
+    - material_score>0 / >0.3 の候補数
+    - B/C のうち材料あり / 材料なし(AI類似・チャートのみ) の内訳
+    - 材料・チャート・出来高が揃った候補数
+    """
+    run_date = run_date or latest_run_date()
+    if not run_date:
+        return {}
+    with db.cursor() as conn:
+        rows = conn.execute(
+            "SELECT category,material_score,similarity_score,chart_score,volume_score,flags "
+            "FROM predictions WHERE run_date=%s", (run_date,)).fetchall()
+    n = len(rows)
+    ms0 = ms3 = 0
+    bc = bc_mat = bc_nomat = bc_simonly = trifecta = 0
+    for r in rows:
+        ms = r["material_score"] or 0
+        if ms > 0.05:
+            ms0 += 1
+        if ms > 0.3:
+            ms3 += 1
+        if r["category"] in ("A", "B", "C"):
+            bc += 1
+            if ms > 0.05:
+                bc_mat += 1
+            else:
+                bc_nomat += 1
+                if (r["similarity_score"] or 0) >= 0.9:
+                    bc_simonly += 1
+            if ms > 0.05 and (r["chart_score"] or 0) > 0.3 and (r["volume_score"] or 0) > 0.3:
+                trifecta += 1
+    return {
+        "total": n,
+        "material_score_gt0": ms0,
+        "material_score_gt03": ms3,
+        "abc_total": bc,
+        "abc_material_backed": bc_mat,
+        "abc_no_material": bc_nomat,
+        "abc_ai_similarity_only": bc_simonly,
+        "abc_material_chart_volume": trifecta,
+    }
+
+
 def accuracy_stats() -> dict:
     """的中率・失敗率の集計 (pure DB — no ML deps)。"""
     with db.cursor() as conn:

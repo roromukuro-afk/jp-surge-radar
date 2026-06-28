@@ -75,6 +75,29 @@
   {% else %}
   <div class="mt-1 text-warn text-xs">⚠️ 直近30日の材料データなし — 初回セットアップ: <code class="bg-panel2 px-1 rounded">python -m surge_radar.cli materials</code></div>
   {% endif %}
+  <!-- 材料カバレッジ: 材料込み/材料なしを明確化 -->
+  {% if mat_coverage and mat_coverage.abc_total %}
+  <div class="mt-2 border-t border-line/50 pt-2">
+    <div class="text-slate-500 mb-1">材料カバレッジ (A/B/C候補 {{mat_coverage.abc_total}}件)</div>
+    <div class="flex flex-wrap gap-2">
+      <span class="text-xs px-2 py-0.5 rounded bg-panel2 border border-line/50">
+        <span class="text-good font-semibold">{{mat_coverage.abc_material_backed}}</span>
+        <span class="text-slate-500 ml-1">材料あり</span></span>
+      <span class="text-xs px-2 py-0.5 rounded bg-panel2 border border-line/50">
+        <span class="{{ 'text-warn' if mat_coverage.abc_no_material else 'text-slate-300' }} font-semibold">{{mat_coverage.abc_no_material}}</span>
+        <span class="text-slate-500 ml-1">材料なし(AI類似/チャート)</span></span>
+      <span class="text-xs px-2 py-0.5 rounded bg-panel2 border border-line/50">
+        <span class="text-acc2 font-semibold">{{mat_coverage.abc_material_chart_volume}}</span>
+        <span class="text-slate-500 ml-1">材料+チャート+出来高</span></span>
+      <span class="text-xs px-2 py-0.5 rounded bg-panel2 border border-line/50">
+        <span class="text-slate-300 font-semibold">{{mat_coverage.material_score_gt03}}</span>
+        <span class="text-slate-500 ml-1">材料スコア&gt;0.3</span></span>
+    </div>
+    {% if mat_coverage.abc_ai_similarity_only %}
+    <div class="text-slate-500 text-[11px] mt-1">※ うち {{mat_coverage.abc_ai_similarity_only}}件は材料なし・AI類似度のみで選出（理由は各候補の根拠を参照）</div>
+    {% endif %}
+  </div>
+  {% endif %}
   <!-- 最終パイプライン実行 -->
   {% if overview.last_pipeline %}
   <div class="mt-2 border-t border-line/50 pt-2 text-slate-500">

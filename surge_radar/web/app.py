@@ -105,6 +105,7 @@ def index(request: Request, run_date: str | None = None, category: str = "ALL", 
         request, rows=rows, run_date=actual_run_date,
         category=category, run_dates=queries.run_dates(), limit=limit,
         cat_summary=queries.category_summary(actual_run_date),
+        mat_coverage=queries.material_coverage(actual_run_date),
         market_score=(rows[0]["flags"].get("market_score") if rows else None)))
 
 
