@@ -1,151 +1,210 @@
 # Surge Radar — 本番状態レポート
-最終更新: 2026-06-27 (クラウド本番公開完了)
+最終更新: 2026-06-28 (bootstrap完了・材料分析アップグレード・全銘柄predict)
 
-> 機密情報 (DATABASE_URL / VAPID_PRIVATE_KEY 等) はこのファイルに記載しない。
+> 機密情報 (DATABASE_URL / VAPID_PRIVATE_KEY / EDINET_API_KEY 等) はこのファイルに書かない。
 > 値は `.env` / GitHub Secrets / Vercel Environment Variables のみで管理。
 
 ---
 
 ## 公開URL (本番・稼働中)
 
-**https://jpsurgeradar.vercel.app**
-
-- スマホ・PC・外出先のモバイル回線からHTTPSでアクセス可能
-- PCを閉じていても稼働 (Vercel サーバーレス)
-- `/healthz` でNeon PostgreSQLの統計をリアルタイム返却 (動作確認済み)
+**https://jpsurgeradar.vercel.app** — スマホ・PC・外出先のモバイル回線からHTTPS。PCを閉じても稼働。
 
 ---
 
-## 完成基準チェックリスト
-
-| 基準 | 状態 |
-|------|------|
-| Webアプリがクラウドにデプロイ | ✅ Vercel 本番稼働 |
-| 公開URLでスマホから外出先でもアクセス | ✅ https://jpsurgeradar.vercel.app |
-| PCを閉じても動く | ✅ Vercel サーバーレス |
-| クラウドDBにデータが永続保存 | ✅ Neon PostgreSQL |
-| 毎営業日クラウド自動実行 | ✅ GitHub Actions daily.yml (16:40 JST) |
-| 全対象銘柄(3000円以下)を分析 | ⏳ 価格bootstrap実行中 (universe 3,572) |
-| 材料・チャート・出来高・テーマ・AI類似度統合ランキング | ✅ |
-| live予測保存 | ✅ predictions 693件 |
-| 5/10/20営業日 成否判定 | ✅ track.py |
-| 失敗予測の教師データ化 | ✅ live_fail=40 |
-| 必要時に再学習 | ✅ train.retrain (CIで実行) |
-| スマホでランキング・詳細・材料・チャート確認 | ✅ 全ページHTTP 200 |
-| PWAホーム画面追加 | ✅ manifest.json / sw.js / icons 配信確認 |
-| Push通知 | ✅ VAPID configured (購読UI稼働、購読者0) |
-| STATUS.mdに現実の状態を記録 | ✅ 本ファイル |
-
----
-
-## クラウド本番構成
+## クラウド構成
 
 ```
-[スマホ/外部] → HTTPS → [Vercel サーバーレス (FastAPI 軽量版 app_vercel)]
-                                    ↓ 読み取り
-                      [Neon PostgreSQL 無料 (surge_radar DB, Singapore)]
-                                    ↑ 書き込み
-   [GitHub Actions daily.yml : 毎営業日 07:40 UTC = 16:40 JST に全処理]
+[スマホ/外部] → HTTPS → [Vercel サーバーレス (FastAPI 軽量版)]
+                                ↓ 読取
+                  [Neon PostgreSQL (surge_radar, Singapore)]
+                                ↑ 書込
+   [GitHub Actions daily.yml : 毎営業日 07:40 UTC = 16:40 JST]
 ```
 
-| コンポーネント | サービス | 費用 | 状態 |
-|--------------|---------|------|------|
-| Web (公開URL) | Vercel | 無料 (Hobby) | ✅ 稼働中 |
-| PostgreSQL | Neon free (surge_radar) | 無料 (512MB) | ✅ 稼働中 |
-| 日次パイプライン | GitHub Actions | 無料 (public repo) | ✅ 稼働中 |
-| モデル保存 | PostgreSQL BYTEA | 無料 | ✅ 3モデル |
-| Push通知 | Web Push (VAPID) | 無料 | ✅ 鍵設定済 |
-| 予備ホスト | Render (render.yaml) | 無料 | ⬜ 任意 (Vercelで充足) |
+| コンポーネント | サービス | 状態 |
+|--------------|---------|------|
+| Web (公開URL) | Vercel Hobby | ✅ 稼働 |
+| DB | Neon free (512MB) | ✅ 稼働 |
+| 日次パイプライン | GitHub Actions (public) | ✅ 稼働 |
+| 予備ホスト | Render (render.yaml) | ⬜ 任意 |
 
-Web層 (Vercel) は numpy/pandas/sklearn を含まない軽量依存 (`requirements.txt`)。
-重いML処理はGitHub Actions側 (`requirements-pipeline.txt`) で実行し、
-両者はNeon PostgreSQLを介して連携する。
+Web層は numpy/pandas/sklearn を含まない軽量依存。重いML処理はGitHub Actions側。
 
 ---
 
-## GitHub Actions ワークフロー (3分割)
+## bootstrap 結果 (価格データ全件取得)
 
-| ワークフロー | トリガ | 役割 | 直近実績 |
-|------------|--------|------|---------|
-| `validate.yml` | master push | DB接続+schema+5銘柄スモーク | ✅ 2分46秒 success |
-| `bootstrap.yml` | 手動 | 全銘柄の初回価格取得 (最大6h) | ⏳ 実行中 |
-| `daily.yml` | cron 16:40 JST / 手動 | 本番日次 (差分株価→材料→track→retrain→predict→push) | 設定済 (55分上限) |
-
-### パイプライン失敗扱い (本番仕様)
-- **CRITICAL (失敗で全体中断)**: DB接続 / universe / ingest / predict / predictions保存 / job_logs保存
-- **WARNING (記録して継続)**: TDnet / Kabutan / EDINET / themes / track / retrain / Push通知
-
----
-
-## 重大な性能修正 (タイムアウト解消)
-
-旧構成は45分でタイムアウトしていた。原因と対策:
-
-1. **接続プーリング欠如** — `db.cursor()` が毎回 Neon(Singapore) へ新規接続 (~0.8秒)。
-   track_all / predict が数千銘柄でループし無音ハング → スレッドローカル接続プール導入 (806ms→223ms)。
-2. **銘柄ごとDB往復** — predict が全universe(~3500)を1銘柄ずつクエリ。
-   → priced事前フィルタ + バルクプリロード (load_history_bulk / 材料 / 業種) で9000往復→約12クエリ。
-3. **出力バッファリング** — `PYTHONUNBUFFERED=1` をCIに設定。
-4. **TDnet バックオフ暴走** — リトライ5/指数バックオフ → リトライ2/2分上限。
-
-結果: フルパイプライン(5銘柄) 15分+クラッシュ → **77秒** で完走。validate CI **2分46秒**。
+| 項目 | 値 |
+|------|---|
+| workflow | ✅ success |
+| 実行時間 | 約3時間42分 (price fetch ~2h45m + 初回predict ~56m) |
+| 価格取得 | 成功 3,522 / 失敗 **0** |
+| **priced_codes** | **3,572 / 3,572 (全銘柄)** |
+| **prices 行数** | **1,740,520** (約2年分OHLCV) |
+| job_logs | ✅ daily_pipeline ok 記録 |
+| rate limit | なし (fail=0) |
 
 ---
 
-## データベース状況 (Neon PostgreSQL)
+## DB データ状況 (Neon PostgreSQL)
 
-| テーブル | 件数 | 備考 |
-|---------|------|------|
-| securities | 3,572 | universe |
-| prices | bootstrap実行中 | 既存50銘柄→全対象へ拡大中 |
-| materials | 1,801 | kabutan:1,362 / tdnet:119 |
-| teacher_samples | 36,665 | historical 36,615 / live 50 (live_fail=40) |
-| model_meta | 3 | BYTEA含む。CIで実モデルロード確認 |
-| predictions | 693 | 最新 run_date 2026-06-27 |
-| prediction_outcomes | 52 | |
-
----
-
-## 材料ソース状況
-
-| ソース | 方式 | APIキー | 状況 |
-|--------|------|---------|------|
-| TDnet (yanoshin) | 範囲一括 (リトライ2/2分上限) | 不要 | ✅ |
-| EDINET (金融庁 v2) | 日付別一覧 | 不要 | ✅ |
-| Kabutan | HTMLスクレイピング | 不要 | ✅ |
-| Yahoo Finance News | REST | 不要 | ✅ |
-
-UIにソース別件数・材料あり銘柄数・最終取得日時を表示 (overview)。
+| テーブル | 件数 |
+|---------|------|
+| securities | 3,572 |
+| prices | 1,740,520 行 / 3,572 codes |
+| materials | 1,803 |
+| teacher_samples | 36,666 (live_fail 40 / live_success 10) |
+| model_meta | 3 (v20260626_105519, CV AUC 0.7558) |
+| predictions | 直近runで再生成 (3000円以下・60本以上の全対象) |
 
 ---
 
-## 動作確認済みエンドポイント (本番URL)
+## 材料分析アップグレード (今回の中核) — 件数でなく「質」
 
-| パス | 結果 |
+材料を単なる見出し保存から、未織り込み・接続度・反応・リスク・AIコメントを持つ分析データへ。
+
+### 材料品質フィールド (全1,803件に付与)
+| フィールド | 内容 | 充足 |
+|-----------|------|------|
+| material_type | 種別(上方修正/大型受注/提携/増資/薬事承認/月次…) | 202 (公式開示分) |
+| unpriced | 未織り込み感(サプライズ性) | **1,803** |
+| connection (connect) | 銘柄接続度(公式開示=1.0/kabutan=0.8) | **1,803** |
+| chart_reaction | 材料後の株価反応(prices事後計算) | **1,610** |
+| volume_reaction | 材料後の出来高反応 | **777** |
+| risk | 出尽くし+希薄化リスク | **366** |
+| ai_comment | 上記統合の日本語コメント(ルールベース) | **1,803** |
+| material_quality | 接続度×未織込×持続×反応×(1-リスク) | 全件算出 (平均 0.241) |
+
+material_quality 上位例: M&A・買収 (q0.67, 反応1.0)、TOB、上方修正(ストップ高+出来高1.0)、過去最高益。
+→ 材料が銘柄に接続し、株価・出来高が反応した「本物」を上位に出せている。
+
+モデル特徴量キー(material_raw 等)は不変に保ち、学習済みモデルとの互換を維持。
+material_quality と top材料情報は予測の flags に保存し、ランキング診断・詳細画面で表示。
+
+### 材料ソース別 (正直な状況)
+| ソース | 件数 | 状態 |
+|--------|------|------|
+| Kabutan | 1,682 | ✅ 銘柄ニュース。**見出しのみ(本文未取得)**。分析で個別スコア化済 |
+| TDnet | 121 | ✅ 公式開示。material_type分類が効く |
+| **EDINET** | **0** | ⚠️ **APIキー必須**(下記)。コードはキー対応済 |
+| 外部ニュース(Yahoo/Reuters) | 0 | ❌ **daily未実装**(取得コードはあるが日次に組込まず) |
+| 企業IR本文 | 0 | ❌ **未実装** |
+| body(本文) | 0 | ❌ **未実装**(見出しのみ保存) |
+
+### EDINET が 0 件の理由 (重要)
+EDINET API v2 は2024年以降 **サブスクリプションキー必須**。キー無しの呼び出しは
+`401 invalid subscription key` を返すため0件。コードは `EDINET_API_KEY` 環境変数に
+対応済み(未設定時は理由をログ出力してスキップ)。
+**ユーザーが https://api.edinet-fsa.go.jp で無料キーを取得し、GitHub Secrets に
+`EDINET_API_KEY` を設定すれば EDINET 材料が自動で入る。**
+
+---
+
+## パイプライン性能 (タイムアウト対策)
+
+| ステップ | 旧 | 新 | 対策 |
+|---------|---|---|------|
+| track | ~15分 | **24秒** | バルクプリロード+batch upsert |
+| predict 特徴量 | 500本/銘柄 | 260本に限定 | 52週高値=250本のみ必要。値は不変を検証 |
+| DB接続 | 毎回新規(0.8s) | スレッドプール再利用(0.22s) | 接続プーリング |
+| 銘柄ごと往復 | 数千 | バルク化 | load_history_bulk 等 |
+
+### daily workflow 実測 (2026-06-28 フル実行, conclusion=success)
+| ステップ | 時間 |
+|---------|------|
+| universe | 1s |
+| ingest (差分) | 50s |
+| materials (TDnet/EDINET) | 50s |
+| themes | 7s |
+| track (5/10/20日判定) | **22s** (旧15分から改善) |
+| teacher_status / train | 8s |
+| **predict (全2,841銘柄評価)** | **35.8分** |
+| enrich + push + job_logs | ~2分 |
+| **合計** | **約41分** |
+
+timeout は安全余裕で75分に設定(CIランナー個体差対策)。実測41分で完走。
+※ 一度ランナー個体差で predict が55分超となりキャンセルされたため、75分余裕を確保。
+
+### daily workflow ステップ (run_daily)
+差分price更新 → 材料(TDnet/EDINET) → themes → track(5/10/20日判定・live_fail/success・danger_fail) →
+teacher_status → 必要時retrain → predict → top候補kabutan enrich → push通知 → job_logs保存。
+失敗扱い: CRITICAL(DB/universe/ingest/predict/保存) は中断、WARNING(材料/track/retrain/push) は継続。
+
+---
+
+## full predict 結果 (2026-06-28, 全銘柄)
+
+| 項目 | 値 |
+|------|---|
+| 評価銘柄 | 2,841 (3000円以下・60本以上) / skip 731 |
+| 保存予測 | 300 (上位) |
+| **A/B/C/D/E** | A:0 / **B:31** / **C:36** / D:233 / E:0(保存上位) |
+| material_quality>0 | 134 |
+| material_quality>0.3 | 62 |
+| **B/C 材料あり** | **43** |
+| B/C 材料なし(AI類似/チャートのみ) | 24 (うちAI類似度のみ 23) |
+| 材料+チャート+出来高 揃い | 32 |
+| model | v20260626_105519 (実モデル) |
+| market_score | 0.744 |
+
+### 材料込み/材料なしの明確化 (UI + 診断)
+ランキング画面に材料カバレッジパネルを表示(材料あり/材料なし/材料+チャート+出来高/材料スコア>0.3)。
+材料なしで B/C に上がる候補(AI類似度のみ 23件)は classify_path=B_very_strong_ai 等で記録し、
+各候補の reasons に「AI類似: 過去急騰前パターンと高類似」と根拠を明示。
+
+### 上位候補例 (材料分析込み)
+- #1 7875 竹田iP [B] matQ0.46 出来高伴い株価反応あり (cr1.0/vr1.0)
+- #3 6335 東京機械 [B] B_material_volume matQ0.45 (cr1.0/vr0.86)
+- #4 6298 ワイエイシイ [B] type=決算 「株価反応は限定的」
+- #6 6999 KOA [B] matQ0 (材料なし・AI類似/チャートのみ)
+- #8 6620 宮越HD [B] B_material_volume matQ0.46 (cr1.0/vr1.0)
+
+---
+
+## Push 通知
+
+| 項目 | 状態 |
 |------|------|
-| `/healthz` | ✅ Neon統計JSON返却 |
-| `/` ランキング | ✅ HTTP 200 |
-| `/pred/{id}` 詳細(材料/チャート/MA/出来高/失敗条件) | ✅ HTTP 200 |
-| `/accuracy` `/model` `/history` | ✅ HTTP 200 |
-| `/api/ranking` `/api/accuracy` | ✅ JSON |
-| `/sw.js` `/static/manifest.json` `/static/icon-192.png` | ✅ PWA資産 |
-| `/push/public-key` | ✅ configured:true |
+| VAPID | ✅ configured (public key配信, configured:true) |
+| 購読UI(通知ベル ON/OFF) | ✅ 配信済 |
+| Service Worker (push/notificationclick/showNotification) | ✅ |
+| /push/subscribe 保存 | ✅ (検証済) |
+| 粒度別トリガ | ✅ A候補/danger_fail/live S・A・B成功/日次サマリ/pipeline失敗 |
+| **購読者** | **0人** |
+| **実送信(delivery)** | ⚠️ **未確認**(購読者0のため。実機での購読が必要) |
+| iOS制約 | PWAをホーム画面追加後でないとPush不可(iOS 16.4+)。要実機 |
+| 代替案 | iOSで困難なら LINE Notify / メール / GitHub Actions通知を検討(要キー) |
+
+実機手順: スマホでURLを開く→ホーム画面追加→アプリ起動→通知ベルON→許可→push_subscriptions保存→
+次のdaily(または手動dispatch)で通知配信。
 
 ---
 
-## デプロイ運用メモ
+## スマホ / PWA
 
-- Vercelプロジェクト: `roromukuro-5711s-projects/jp_surge_radar` (GitHub連携済み、master pushで自動デプロイ)
-- 環境変数 (DATABASE_URL / VAPID_* / SURGE_ENABLE_LLM) は Vercel Production に設定済み (暗号化)
-- 手動再デプロイ: `vercel deploy --prod --yes --scope roromukuro-5711s-projects`
-- 環境変数更新: `python scripts/set_vercel_env.py --scope roromukuro-5711s-projects` (.envから、値は非表示)
+| 確認項目 | 状態 |
+|---------|------|
+| モバイル回線でアクセス | ✅ |
+| viewport / レスポンシブ | ✅ |
+| ホーム画面追加(manifest standalone+maskable+shortcuts) | ✅ |
+| ランキング/詳細/材料/チャート(MA5/25/75)/出来高 | ✅ HTTP 200 |
+| 材料ステータス(ソース別件数) | ✅ |
+| 材料の material_type/未織込/接続/チャート反応/出来高反応/リスク/AIコメント表示 | ✅ (detail) |
+| 材料URLリンク | ✅ |
+| Push購読UI | ✅ |
 
 ---
 
-## 残課題 / 次に自動実行される予定
+## 残課題 (正直版)
 
-- [ ] bootstrap.yml 完了 → prices 全対象銘柄取得
-- [ ] 完了後 daily.yml をフル実行 (limit無し) し全銘柄ランキング生成
-- [ ] daily.yml が55分以内で安定完走することを実データで確認
-- [ ] 実機スマホでPWAホーム画面追加・Push購読テスト (購読者登録後にPush送信確認)
-- 次回自動実行: 毎営業日 16:40 JST (cron) に daily.yml
+- [ ] **EDINET_API_KEY 未設定** → EDINET材料0件。ユーザーが無料キー取得で解消
+- [ ] 外部ニュース(Yahoo/Reuters)を daily に組込み(コードはあり)
+- [ ] 企業IR本文 / Kabutan本文の取得(現状は見出しのみ、body=0)
+- [ ] Push購読者0 → 実機でホーム画面追加+購読+通知到達テスト
+- [ ] 材料反応は価格更新ごとに再計算(daily/週次でbackfill自動化を検討)
+- [ ] daily の B/C で材料なし候補(AI類似のみ)の比率を継続監視
+
+## 次に自動実行される予定
+- 毎営業日 16:40 JST (cron) に daily.yml(差分price→材料→track→retrain→predict→push→job_logs)
+- master push 時に validate.yml(非破壊スモーク, predict保存しない)

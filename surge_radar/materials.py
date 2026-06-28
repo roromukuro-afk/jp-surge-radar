@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -514,10 +515,19 @@ def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
             print(f"    [EDINET] cache hit {date}: {n} docs, {len(cached)} codes")
             return cached
 
-    params = {"date": date, "type": 2}
+    # EDINET API v2 は2024年以降サブスクリプションキー必須 (無料登録で取得)。
+    # 未設定ならスキップ (キーが無いと 401 で0件になるため理由を明示)。
+    api_key = os.environ.get("EDINET_API_KEY", "").strip()
+    if not api_key:
+        print(f"    [EDINET] skipped {date}: EDINET_API_KEY 未設定 "
+              f"(https://api.edinet-fsa.go.jp で無料取得し環境変数に設定)")
+        return {}
+
+    params = {"date": date, "type": 2, "Subscription-Key": api_key}
     data = _get_json(EDINET_API, params, retries=3, timeout=30, base_pause=1.5)
-    if not data:
-        print(f"    [EDINET] fetch failed for {date}")
+    if not data or data.get("StatusCode") not in (None, 200):
+        msg = (data or {}).get("message", "no data")
+        print(f"    [EDINET] fetch failed for {date}: {str(msg)[:80]}")
         return {}
 
     # EDINET は edinetCode を返すので company map でTSEコードに変換
