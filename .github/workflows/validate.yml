@@ -21,7 +21,7 @@ jobs:
         run: pip install -r requirements-pipeline.txt
       - name: DB connection and schema
         run: python -m surge_radar.cli init-db
-      - name: Quick pipeline smoke test (non-destructive: no predict store)
+      - name: Quick pipeline smoke test (non-destructive, no predict store)
         run: python scripts/run_daily.py "5" "true" "true" "false"
       - name: Summary
         if: always()
