@@ -52,22 +52,52 @@ def fetch_one(code: str, range_: str = "2y") -> int:
 
 
 def fetch_many(codes: list[str], range_: str = "2y", pause: float = 0.25,
-               log_every: int = 100, on_progress=None) -> dict:
-    """複数銘柄を取得。レート制限に配慮しつつ進捗を返す。"""
+               log_every: int = 100, on_progress=None, workers: int = 8) -> dict:
+    """複数銘柄を取得。I/Oバウンドなのでスレッド並列で取得する。
+
+    yfinance は HTTP 取得が支配的なため、逐次だと数千銘柄で 1〜2時間かかり daily が
+    タイムアウトする。ThreadPoolExecutor で並列化 (既定8並列)。各スレッドは db.py の
+    スレッドローカル接続を使うため DB 書き込みは安全。workers<=1 で従来の逐次動作。
+    失敗銘柄は stale のまま翌営業日に再取得される (自己修復)。
+    """
     ok = 0; fail = 0; total_rows = 0
-    failed_codes = []
-    for i, code in enumerate(codes, 1):
+    failed_codes: list[str] = []
+
+    if workers <= 1:
+        for i, code in enumerate(codes, 1):
+            try:
+                n = fetch_one(code, range_=range_)
+                if n > 0:
+                    ok += 1; total_rows += n
+                else:
+                    fail += 1; failed_codes.append(code)
+            except Exception:
+                fail += 1; failed_codes.append(code)
+            if on_progress and i % log_every == 0:
+                on_progress(i, len(codes), ok, fail)
+            time.sleep(pause)
+        return {"ok": ok, "fail": fail, "rows": total_rows, "failed_codes": failed_codes[:200]}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one(code: str):
         try:
-            n = fetch_one(code, range_=range_)
-            if n > 0:
+            return code, fetch_one(code, range_=range_), None
+        except Exception as e:  # noqa: BLE001
+            return code, 0, e
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_one, c) for c in codes]
+        for fut in as_completed(futures):
+            code, n, err = fut.result()
+            done += 1
+            if err is None and n > 0:
                 ok += 1; total_rows += n
             else:
                 fail += 1; failed_codes.append(code)
-        except Exception:
-            fail += 1; failed_codes.append(code)
-        if on_progress and i % log_every == 0:
-            on_progress(i, len(codes), ok, fail)
-        time.sleep(pause)
+            if on_progress and done % log_every == 0:
+                on_progress(done, len(codes), ok, fail)
     return {"ok": ok, "fail": fail, "rows": total_rows, "failed_codes": failed_codes[:200]}
 
 
