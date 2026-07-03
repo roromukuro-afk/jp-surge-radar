@@ -183,3 +183,57 @@ if succ:
     print("    ただし十分な件数(目安: 各区分20件以上)が揃うまで条件は変更しない。")
 else:
     print("  成功判定なし")
+
+# ===== 非バイアス早期パフォーマンス (open含む全追跡・5営業日) =====
+# judged は「+20%到達 or 20営業日到達」だけなので生存者バイアスがある。
+# ここは status に関わらず bars_tracked>=5 の全追跡予測の「5営業日の実際の値動き」を見る。
+print("\n===== [13] 早期パフォーマンス (非バイアス: judged/open問わず bars_tracked>=5, 5営業日) =====")
+print("  ※ +20%到達で確定した分だけでなく追跡中(open)も含む。生存者バイアスを除いた早期指標。")
+with db.cursor() as c2:
+    trk = c2.execute(
+        """SELECT p.category, p.material_score, p.similarity_score, p.chart_score,
+                  p.volume_score, p.flags, o.bars_tracked, o.max_up_5d, o.max_up_10d
+           FROM predictions p JOIN prediction_outcomes o ON o.prediction_id=p.id
+           WHERE COALESCE(p.origin,'live')='live' AND o.bars_tracked>=5"""
+    ).fetchall()
+for r in trk:
+    r["_f"] = lj(r["flags"], {})
+    r["_mq"] = r["_f"].get("material_quality", 0) or 0
+    r["_path"] = r["_f"].get("classify_path", "(none)")
+
+
+def early(rs):
+    m = len(rs)
+    if not m:
+        return "追跡0"
+    up20 = sum(1 for r in rs if (r["max_up_5d"] or 0) >= 0.20)
+    up10 = sum(1 for r in rs if (r["max_up_5d"] or 0) >= 0.10)
+    avg = sum((r["max_up_5d"] or 0) for r in rs) / m
+    tag = " (N小)" if m < 20 else ""
+    return (f"追跡{m}{tag} | 5日+20% {up20}({up20/m*100:.0f}%) | "
+            f"+10% {up10}({up10/m*100:.0f}%) | 平均max5d {avg*100:+.1f}%")
+
+
+print(f"  追跡総数(bars>=5): {len(trk)}")
+if trk:
+    print("  --- カテゴリ別 ---")
+    for cat in ["A", "B", "C", "D", "E"]:
+        rs = [r for r in trk if r["category"] == cat]
+        if rs:
+            print(f"   [{cat}] {early(rs)}")
+    print(f"   B/C計: {early([r for r in trk if r['category'] in ('B', 'C')])}")
+    print(f"   D/E計: {early([r for r in trk if r['category'] in ('D', 'E')])}")
+    print("  --- 材料/品質別 ---")
+    print(f"   材料あり(mat>0.05): {early([r for r in trk if (r['material_score'] or 0) > 0.05])}")
+    print(f"   材料なし:           {early([r for r in trk if (r['material_score'] or 0) <= 0.05])}")
+    print(f"   mq>0.3:             {early([r for r in trk if r['_mq'] > 0.3])}")
+    print(f"   材料+chart+vol:     {early([r for r in trk if (r['material_score'] or 0) > 0.05 and (r['chart_score'] or 0) > 0.3 and (r['volume_score'] or 0) > 0.3])}")
+    print(f"   低AI類似(<0.7)×出来高/材料: {early([r for r in trk if (r['similarity_score'] or 0) < 0.7 and ((r['volume_score'] or 0) > 0.4 or (r['material_score'] or 0) > 0.05)])}")
+    print("  --- classify_path別(上位6) ---")
+    pth: dict = {}
+    for r in trk:
+        pth.setdefault(r["_path"], []).append(r)
+    for p, rs in sorted(pth.items(), key=lambda kv: -len(kv[1]))[:6]:
+        print(f"   {p:18} {early(rs)}")
+    print("  ※ B/CがD/Eより『5日+20%到達率』『平均max5d』で優位なら分類は機能。")
+    print("    逆に差が無い/D/Eが優位なら拾い漏れの兆候。ただし20営業日確定まで条件は変更しない。")
