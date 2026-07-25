@@ -18,7 +18,7 @@ import sys
 import traceback
 from datetime import datetime
 
-from . import db, ingest, materials, predict, push_notify, themes, track, train, universe
+from . import db, ingest, learning, materials, predict, push_notify, themes, track, train, universe
 
 
 def _log_start(job: str) -> int:
@@ -82,12 +82,14 @@ def update_universe_step(stale_days: int = 7):
 
     if cnt > 100 and last:
         from datetime import timezone
+        if isinstance(last, str):
+            last = datetime.fromisoformat(last.replace("Z", "+00:00"))
         if hasattr(last, "tzinfo") and last.tzinfo:
             age = (datetime.now(timezone.utc) - last).total_seconds() / 86400
         else:
             age = (datetime.now() - last).total_seconds() / 86400
         if age < stale_days:
-            print(f"  [universe] {cnt} securities, updated {age:.1f}d ago — skipping remote fetch", flush=True)
+            print(f"  [universe] {cnt} securities, updated {age:.1f}d ago - skipping remote fetch", flush=True)
             return {"universe": cnt, "skipped": True}
 
     print(f"  [universe] fetching remote universe (cnt={cnt}, last={last})", flush=True)
@@ -238,6 +240,10 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
         if retrain_if_needed:
             summary["teacher_status"] = step("teacher_status", train.ensure_historical)
             summary["retrain"] = step("train", train.retrain, f"daily {asof}")
+
+        # 自律学習フィードバック: classify_path別のtrust_multiplierを最新judged結果で再計算。
+        # predictの直前に置き、本日追加された判定も反映させる。承認ゲートなし(完全自律)。
+        summary["learning"] = step("learning", learning.compute_path_performance)
 
         # --- CRITICAL: predict must succeed ---
         # limit はスモークテスト時に predict も先頭 limit 件に制限する

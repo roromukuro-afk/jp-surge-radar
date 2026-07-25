@@ -134,11 +134,16 @@ def realistic_upside(f: dict) -> float:
 
 def score_candidate(f: dict, ml_prob: float | None = None,
                     similarity: float | None = None,
-                    extra_info: dict | None = None) -> dict:
+                    extra_info: dict | None = None,
+                    danger_similarity: float | None = None,
+                    path_trust: dict | None = None) -> dict:
     """
     1銘柄のフルスコアリング。サブスコア・総合・分類・理由・失敗条件を返す。
     extra_info: {"top_category", "top_title", "themes_matched", "name"} を受け取ると
     reasons の文章が具体的になる。
+    danger_similarity: 過去の危険失敗パターンへの類似度(0..1)。高いほど減点。
+    path_trust: classify_path -> trust_multiplier の辞書 (learning.get_trust_multipliers())。
+                実績(shrinkage込み)に応じてスコアを自律調整する。件数少ない pathは1.0付近。
     """
     sub = {
         "material": material_score(f),
@@ -150,6 +155,7 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     }
     gates = exclusion_gates(f)
     upside = realistic_upside(f)
+    dsim = float(danger_similarity) if danger_similarity is not None else 0.0
 
     weighted = sum(WEIGHTS[k] * sub[k] for k in WEIGHTS)
     top = max(sub["material"], sub["chart"], sub["volume"], sub["theme"], sub["similarity"])  # 火種
@@ -166,13 +172,30 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     risk += 0.10 * f.get("volume_top_risk", 0)
     composite *= (1 - min(risk, 0.5))
 
+    # 危険失敗パターン類似度による減点 (最大25%減、成功類似度の対称)
+    if dsim > 0:
+        composite *= (1 - 0.25 * dsim)
+
     # ゲート: 該当で大幅減点(完全破綻は実質除外)
     if gates:
         composite *= 0.25
 
     composite = _clip01(composite)
     category, classify_path = _classify(sub, f, gates, upside, composite)
+
+    # 自律学習フィードバック: 実績(shrinkage込み)に応じたpath別信頼度を反映。
+    # 件数が少ないpathはmultiplierが1.0近傍のため実質無調整 (learning.py参照)。
+    trust_mult = 1.0
+    if path_trust and classify_path in path_trust:
+        trust_mult = path_trust[classify_path]
+        if abs(trust_mult - 1.0) > 1e-6:
+            adjusted = _clip01(composite * trust_mult)
+            category, classify_path = _classify(sub, f, gates, upside, adjusted)
+            composite = adjusted
+
     reasons = _reasons(sub, f, upside, extra_info)
+    if dsim >= 0.6:
+        reasons.append(f"注意: 過去の危険失敗パターンと類似(スコア{dsim:.2f}) — 慎重評価")
     fail_conditions = _failure_conditions(f, sub)
 
     return {
@@ -186,6 +209,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
         "reasons": reasons,
         "failure_conditions": fail_conditions,
         "top_driver": max(sub, key=sub.get),
+        "danger_similarity": round(dsim, 3),
+        "path_trust_multiplier": round(trust_mult, 3),
     }
 
 

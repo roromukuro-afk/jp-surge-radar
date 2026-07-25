@@ -237,3 +237,23 @@ if trk:
         print(f"   {p:18} {early(rs)}")
     print("  ※ B/CがD/Eより『5日+20%到達率』『平均max5d』で優位なら分類は機能。")
     print("    逆に差が無い/D/Eが優位なら拾い漏れの兆候。ただし20営業日確定まで条件は変更しない。")
+
+print("\n===== [14] 自律学習フィードバック 現在の状態 (learning.py, 完全自律・毎日自動更新) =====")
+print("  ※ ここに出るtrust_multiplierが現在ライブでスコアリングに適用されている値。")
+print("    maturity_ramp: 運用歴が浅いうちは振れ幅を自動抑制(生存者バイアス対策)。")
+with db.cursor() as c3:
+    pp = c3.execute(
+        "SELECT classify_path,n_judged,n_success,n_danger_fail,raw_hit_rate,"
+        "shrunk_hit_rate,trust_multiplier,updated_at FROM path_performance "
+        "ORDER BY n_judged DESC"
+    ).fetchall()
+if pp:
+    last_updated = pp[0]["updated_at"]
+    print(f"  最終更新: {last_updated}")
+    for r in pp:
+        flag = " ← 実績により減点中" if r["trust_multiplier"] < 0.97 else (
+               " ← 実績により加点中" if r["trust_multiplier"] > 1.03 else "")
+        print(f"   {r['classify_path']:20} n={r['n_judged']:4} 生勝率={r['raw_hit_rate']:.2f} "
+              f"補正後={r['shrunk_hit_rate']:.2f} trust={r['trust_multiplier']:.3f}{flag}")
+else:
+    print("  未計算 (次回dailyのlearningステップで生成される)")

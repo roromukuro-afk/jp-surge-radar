@@ -170,6 +170,18 @@ CREATE TABLE IF NOT EXISTS job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_joblog_job ON job_logs(job);
 
+CREATE TABLE IF NOT EXISTS path_performance (
+    classify_path      TEXT PRIMARY KEY,
+    n_judged           INTEGER,
+    n_success          INTEGER,
+    n_danger_fail      INTEGER,
+    raw_hit_rate       REAL,
+    shrunk_hit_rate    REAL,
+    shrunk_danger_rate REAL,
+    trust_multiplier   REAL,
+    updated_at         TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id          BIGSERIAL PRIMARY KEY,
     endpoint    TEXT UNIQUE NOT NULL,
@@ -317,6 +329,18 @@ CREATE TABLE IF NOT EXISTS job_logs (
     message     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_joblog_job ON job_logs(job);
+
+CREATE TABLE IF NOT EXISTS path_performance (
+    classify_path      TEXT PRIMARY KEY,
+    n_judged           INTEGER,
+    n_success          INTEGER,
+    n_danger_fail      INTEGER,
+    raw_hit_rate       REAL,
+    shrunk_hit_rate    REAL,
+    shrunk_danger_rate REAL,
+    trust_multiplier   REAL,
+    updated_at         TEXT DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import db, features, ingest, materials, model, scoring, themes
+from . import db, features, ingest, learning, materials, model, scoring, themes
 from .config import PRICE_CAP, TOP_N_DEFAULT
 from .universe import get_target_codes
 
@@ -37,6 +37,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     predictor = model.Predictor()
     market = themes.market_regime(run_date)
     market_score = market.get("score", 0.0)
+    # 自律学習フィードバック: classify_path別の実績信頼度 (learning.py、毎日自動更新)
+    path_trust = learning.get_trust_multipliers()
 
     codes = get_target_codes()
     if not codes:
@@ -96,13 +98,15 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
 
         prob = predictor.predict_proba(feats)
         sim = predictor.similarity(feats)
+        dsim = predictor.danger_similarity(feats)
         extra_info = {
             "top_category": (mat or {}).get("top_category", ""),
             "top_title": (mat or {}).get("top_title", ""),
             "themes_matched": matched_themes,
             "name": name_map.get(code, ""),
         }
-        res = scoring.score_candidate(feats, ml_prob=prob, similarity=sim, extra_info=extra_info)
+        res = scoring.score_candidate(feats, ml_prob=prob, similarity=sim, extra_info=extra_info,
+                                      danger_similarity=dsim, path_trust=path_trust)
         res["_code"] = code
         res["_close"] = close
         res["_feats"] = feats
@@ -159,7 +163,10 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
                        "top_risk": mat.get("top_risk", 0.0),
                        "top_connection": mat.get("top_connection", 0.0),
                        "top_unpriced": mat.get("top_unpriced", 0.0),
-                       "n_materials": mat.get("n_materials", 0)}),
+                       "n_materials": mat.get("n_materials", 0),
+                       # --- 自律学習フィードバック (learning.py) ---
+                       "danger_similarity": r.get("danger_similarity", 0.0),
+                       "path_trust_multiplier": r.get("path_trust_multiplier", 1.0)}),
                  predictor.version or "rules", origin, top_mat),
             )
             stored += 1
