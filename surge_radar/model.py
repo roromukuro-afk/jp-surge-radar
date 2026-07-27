@@ -75,21 +75,32 @@ def _load_model_from_db(version: str):
     return None
 
 
+MATURE_BARS = 18  # 20営業日窓のうちこれ以上追跡できていれば"満期"とみなす
+
+
 def load_samples() -> tuple[np.ndarray, np.ndarray, list[str]]:
-    X, y, src, _danger = load_samples_full()
+    X, y, src, _danger, _bars = load_samples_full()
     return X, y, src
 
 
-def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
-    """教師データを1クエリで取得し、X, y, source, danger_flag を返す。
+def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, np.ndarray]:
+    """教師データを1クエリで取得し、X, y, source, danger_flag, bars_tracked を返す。
 
     danger_flag: label==0 のうち "危険失敗"(danger_fail) だったか。
     historical は tags.result_class、live は tags.result に danger_fail が入る。
+    bars_tracked: live サンプルの実追跡日数 (prediction_outcomes へ prediction_id で
+    LEFT JOIN)。live_fail は必ず20日待って確定するため常に成熟(=20)。live_success は
+    +20%到達した時点で即確定するため未成熟(早期)なものが大半 — sample_weights の
+    早期成功割引に使う。historical/該当なしは None 扱い (NaN)。
     X/y/src と行対応が崩れないよう、必ず同一クエリ結果から同時に組み立てる。
     """
     with db.cursor() as conn:
-        rows = conn.execute("SELECT features,label,source,tags FROM teacher_samples").fetchall()
-    X, y, src, danger = [], [], [], []
+        rows = conn.execute(
+            """SELECT t.features,t.label,t.source,t.tags,o.bars_tracked
+               FROM teacher_samples t
+               LEFT JOIN prediction_outcomes o ON o.prediction_id=t.prediction_id"""
+        ).fetchall()
+    X, y, src, danger, bars = [], [], [], [], []
     for r in rows:
         feats = db.loadj(r["features"], {})
         if not feats:
@@ -98,6 +109,7 @@ def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
         X.append(to_vector(feats))
         y.append(label)
         src.append(r["source"])
+        bars.append(r["bars_tracked"] if r["bars_tracked"] is not None else np.nan)
         if label == 0:
             tags = db.loadj(r["tags"], {})
             rc = tags.get("result_class") or tags.get("result")
@@ -106,21 +118,38 @@ def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
             danger.append(False)
     if not X:
         return (np.empty((0, len(FEATURE_KEYS))), np.empty((0,)), [],
-                np.empty((0,), dtype=bool))
+                np.empty((0,), dtype=bool), np.empty((0,)))
     return (np.array(X, dtype=float), np.array(y, dtype=int), src,
-            np.array(danger, dtype=bool))
+            np.array(danger, dtype=bool), np.array(bars, dtype=float))
 
 
-def sample_weights(src: list[str]) -> np.ndarray:
+def sample_weights(src: list[str], bars_tracked: np.ndarray | None = None) -> np.ndarray:
     """live_success/live_fail に重みを乗せる (historicalに埋もれないようにする)。
 
     live件数が少ないうちは控えめ、増えるほど自動的に重みが上がる自己スケール式
     (learning.live_sample_weight_fraction)。手動チューニング不要。
+
+    重要: live_success は +20%到達した瞬間に即確定するため、大半(実測88%)が
+    bars_tracked<18の"早期・未成熟"な勝ちで、danger_fail等で本当に失敗する
+    候補と同じ特徴量傾向を持つケースも含まれる (生存者バイアス)。live_fail は
+    20日満期を待たないと確定しないため常に成熟している。この非対称性を無視して
+    両方に同じ重みを掛けると、モデルが「早期モメンタム特徴=成功」と過学習し
+    predict_proba が全体的に高騰する (実際に2026-07-27に発生・確認済み)。
+    → live_success は bars_tracked>=MATURE_BARS の"満期"のものだけ重み付け対象。
+      未成熟の live_success は historical と同じ重み1.0 (満期になれば自動的に
+      重み付け対象になる)。live_fail は常に対象 (常に成熟しているため)。
     """
     from . import learning
     n = len(src)
-    is_live = np.array([s in ("live_success", "live_fail") for s in src])
-    n_live = int(is_live.sum())
+    src_arr = np.array(src)
+    if bars_tracked is None:
+        bars_tracked = np.full(n, np.nan)
+    mature = bars_tracked >= MATURE_BARS
+    is_live_fail = src_arr == "live_fail"
+    is_live_success_mature = (src_arr == "live_success") & mature
+    is_live_boosted = is_live_fail | is_live_success_mature
+
+    n_live = int(is_live_boosted.sum())
     n_hist = n - n_live
     w = np.ones(n, dtype=float)
     if n_live == 0 or n_hist == 0:
@@ -128,7 +157,7 @@ def sample_weights(src: list[str]) -> np.ndarray:
     target_frac = learning.live_sample_weight_fraction(n_live, n_hist)
     # target_frac = (n_live * w_live) / (n_live*w_live + n_hist*w_hist) を w_live について解く (w_hist=1)
     w_live = (target_frac * n_hist) / ((1 - target_frac) * n_live)
-    w[is_live] = w_live
+    w[is_live_boosted] = w_live
     return w
 
 
@@ -147,7 +176,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     from sklearn.preprocessing import StandardScaler
     from sklearn.neighbors import NearestNeighbors
 
-    X, y, src, danger_flags = load_samples_full()
+    X, y, src, danger_flags, bars_tracked = load_samples_full()
     n_pos = int((y == 1).sum()) if len(y) else 0
     n_neg = int((y == 0).sum()) if len(y) else 0
     if len(X) < 30 or n_pos < 8 or n_neg < 8:
@@ -157,7 +186,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
     scaler = StandardScaler().fit(X)
     Xs = scaler.transform(X)
-    weights = sample_weights(src)
+    weights = sample_weights(src, bars_tracked)
 
     clf = GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.05,
                                      subsample=0.85, random_state=42)
@@ -180,11 +209,23 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
         zip(FEATURE_KEYS, [float(v) for v in clf.feature_importances_]),
         key=lambda kv: kv[1], reverse=True))
 
-    n_live = int(sum(1 for s in src if s in ("live_success", "live_fail")))
-    live_weight = float(weights[np.array([s in ("live_success", "live_fail") for s in src])][0]) if n_live else 1.0
+    src_arr = np.array(src)
+    is_live_fail = src_arr == "live_fail"
+    is_live_success = src_arr == "live_success"
+    mature = bars_tracked >= MATURE_BARS
+    n_live_fail = int(is_live_fail.sum())
+    n_live_success_mature = int((is_live_success & mature).sum())
+    n_live_success_immature = int((is_live_success & ~mature).sum())
+    boosted = is_live_fail | (is_live_success & mature)
+    live_weight = float(weights[boosted][0]) if boosted.any() else 1.0
 
-    result_extra = {"n_live": n_live, "n_danger_samples": int(len(neg_danger)),
-                    "live_sample_weight": round(live_weight, 3)}
+    result_extra = {
+        "n_live_fail": n_live_fail,
+        "n_live_success_mature": n_live_success_mature,
+        "n_live_success_immature_discounted": n_live_success_immature,
+        "n_danger_samples": int(len(neg_danger)),
+        "live_sample_weight": round(live_weight, 3),
+    }
 
     if dry_run:
         metrics = {"cv_auc": round(auc, 4) if auc == auc else None,

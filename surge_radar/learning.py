@@ -61,15 +61,28 @@ def _maturity_ramp(conn) -> float:
     return min(1.0, matured / MATURITY_RAMP_COHORTS)
 
 
+# 満期とみなす追跡日数。+20%到達は即確定するため、全judgedをそのまま使うと
+# 「早く決着した勝ちパターン」が過大代表され (実測: 早期成功の88%がbars<18)、
+# trust_multiplier が生存者バイアスで歪む (2026-07-27に実際発生・確認済み)。
+# bars>=18 (ほぼ満期まで追跡できた) だけに絞ることで、勝ち負け双方に公平な母集団にする。
+MATURE_BARS = 18
+
+
 def compute_path_performance() -> dict:
-    """live判定済み予測全件から classify_path 別の trust_multiplier を再計算し、
-    path_performance テーブルへ upsert する。毎日の daily パイプラインから呼ばれる。
+    """live判定済み予測のうち"満期"(bars_tracked>=18)のみから classify_path 別の
+    trust_multiplier を再計算し、path_performance テーブルへ upsert する。
+    毎日の daily パイプラインから呼ばれる。
+
+    早期に+20%到達して確定したもの(大半がbars<18)は意図的に除外する。含めると
+    「早く動く」pathの勝率が実態以上に高く見える生存者バイアスがかかるため
+    (model.py の sample_weights と同じ理由・同じ閾値)。
     """
     with db.cursor() as conn:
         rows = conn.execute(
             """SELECT p.flags, o.result_class
                FROM predictions p JOIN prediction_outcomes o ON o.prediction_id=p.id
-               WHERE p.status='judged' AND COALESCE(p.origin,'live')='live'"""
+               WHERE p.status='judged' AND COALESCE(p.origin,'live')='live'
+                 AND o.bars_tracked >= %s""", (MATURE_BARS,)
         ).fetchall()
         ramp = _maturity_ramp(conn)
 
