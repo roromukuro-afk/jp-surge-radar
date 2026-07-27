@@ -257,3 +257,50 @@ if pp:
               f"補正後={r['shrunk_hit_rate']:.2f} trust={r['trust_multiplier']:.3f}{flag}")
 else:
     print("  未計算 (次回dailyのlearningステップで生成される)")
+
+print("\n===== [15] 早期成功 vs 満期到達 (bars>=18) の実力差 =====")
+print("  ※ 全体のhit_rateは「+20%に早く到達した分だけ」を多く含む生存者バイアスがかかる。")
+print("    ここは早期に決着しなかった(20日近くまで持ち越した)ケースだけに絞った「本当の実力」。")
+with db.cursor() as c4:
+    mature = c4.execute(
+        """SELECT p.category,p.flags,o.result_class
+           FROM predictions p JOIN prediction_outcomes o ON o.prediction_id=p.id
+           WHERE p.status='judged' AND o.bars_tracked>=18"""
+    ).fetchall()
+for r in mature:
+    r["_f"] = lj(r["flags"], {})
+    r["_mq"] = r["_f"].get("material_quality", 0) or 0
+    r["_path"] = r["_f"].get("classify_path", "(none)")
+
+
+def mature_stats(rs):
+    n = len(rs)
+    if not n:
+        return "0件"
+    hit = sum(1 for r in rs if r["result_class"] in SUCCESS)
+    dang = sum(1 for r in rs if r["result_class"] == "danger_fail")
+    tag = " (N小)" if n < 20 else ""
+    return f"n={n}{tag} 勝率={hit}/{n}({hit/n*100:.0f}%) danger_fail={dang}({dang/n*100:.0f}%)"
+
+
+if mature:
+    print("  --- カテゴリ別 ---")
+    for cat in ["A", "B", "C", "D", "E"]:
+        rs = [r for r in mature if r["category"] == cat]
+        if rs:
+            print(f"   [{cat}] {mature_stats(rs)}")
+    print("  --- classify_path別(上位6) ---")
+    mpaths: dict = {}
+    for r in mature:
+        mpaths.setdefault(r["_path"], []).append(r)
+    for p, rs in sorted(mpaths.items(), key=lambda kv: -len(kv[1]))[:6]:
+        print(f"   {p:20} {mature_stats(rs)}")
+    print("  --- material_quality別 ---")
+    print(f"   mq>0.3:  {mature_stats([r for r in mature if r['_mq'] > 0.3])}")
+    print(f"   mq0-0.3: {mature_stats([r for r in mature if 0 < r['_mq'] <= 0.3])}")
+    print(f"   mq=0:    {mature_stats([r for r in mature if r['_mq'] <= 0])}")
+    print("  ※ 全体hit_rateと比べて大きく下がる/danger_fail率が上がるpath・mq帯は、")
+    print("    「早期に決まらないと危険」な性質を持つ。この時点では条件変更しないが、")
+    print("    将来「N日以内に反応がなければ手仕舞い」等の戦略検討材料として記録する。")
+else:
+    print("  bars>=18到達データがまだありません")
