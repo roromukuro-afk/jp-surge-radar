@@ -278,8 +278,8 @@
       <span class="{{ 'text-bad' if p.flags.path_trust_multiplier < 1 else 'text-good' }}">(自律学習補正 ×{{ '%.2f'|format(p.flags.path_trust_multiplier) }})</span>
       {% endif %}
     </div>{% endif %}
-    {% if p.flags.danger_similarity and p.flags.danger_similarity >= 0.4 %}
-    <div class="text-xs text-bad mt-0.5">⚠ 過去の危険失敗パターンとの類似度: {{ '%.2f'|format(p.flags.danger_similarity) }}</div>
+    {% if p.flags.danger_similarity and p.flags.danger_similarity >= 0.02 %}
+    <div class="text-xs text-bad mt-0.5">⚠ 成功類似度を上回る危険失敗パターン類似 (超過{{ '%.3f'|format(p.flags.danger_similarity) }})</div>
     {% endif %}
     {% if p.flags.themes %}<div class="text-xs mt-0.5">テーマ: {{ p.flags.themes|join(', ') }}</div>{% endif %}
     {% if p.flags.gates %}<div class="text-xs text-bad mt-0.5">除外ゲート: {{ p.flags.gates|join(', ') }}</div>{% endif %}

@@ -141,7 +141,10 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     1銘柄のフルスコアリング。サブスコア・総合・分類・理由・失敗条件を返す。
     extra_info: {"top_category", "top_title", "themes_matched", "name"} を受け取ると
     reasons の文章が具体的になる。
-    danger_similarity: 過去の危険失敗パターンへの類似度(0..1)。高いほど減点。
+    danger_similarity: 過去の危険失敗パターンへの類似度(0..1)。similarity(成功類似度)との
+                差分(超過分)のみを減点に使う — 絶対値は similarity と相関0.92で
+                ほぼ同一(急騰候補は成功/失敗問わず「勢いのある値動き」という同じ特徴量
+                領域を共有するため)。差分でないと実質全候補が一律減点されてしまう。
     path_trust: classify_path -> trust_multiplier の辞書 (learning.get_trust_multipliers())。
                 実績(shrinkage込み)に応じてスコアを自律調整する。件数少ない pathは1.0付近。
     """
@@ -155,7 +158,11 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     }
     gates = exclusion_gates(f)
     upside = realistic_upside(f)
-    dsim = float(danger_similarity) if danger_similarity is not None else 0.0
+    dsim_raw = float(danger_similarity) if danger_similarity is not None else 0.0
+    sim_val = float(similarity) if similarity is not None else 0.0
+    # 危険パターン類似度の"超過分"のみを見る (成功類似度を上回った分だけが本当のリスク信号)。
+    # 絶対値のまま使うと成功類似度と相関0.92で実質同じものを二重評価してしまう。
+    dsim = max(0.0, dsim_raw - sim_val)
 
     weighted = sum(WEIGHTS[k] * sub[k] for k in WEIGHTS)
     top = max(sub["material"], sub["chart"], sub["volume"], sub["theme"], sub["similarity"])  # 火種
@@ -172,9 +179,11 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     risk += 0.10 * f.get("volume_top_risk", 0)
     composite *= (1 - min(risk, 0.5))
 
-    # 危険失敗パターン類似度による減点 (最大25%減、成功類似度の対称)
+    # 危険失敗パターン類似度(超過分)による減点。実データで超過分は大半0、
+    # p99程度でも~0.015、最大でも~0.04程度の小さいスケールのため、係数を大きめに
+    # (最大35%減に上限)。ごく少数(上位数%)の "本当に危険寄り" な候補だけに効く設計。
     if dsim > 0:
-        composite *= (1 - 0.25 * dsim)
+        composite *= (1 - min(0.35, 2.0 * dsim))
 
     # ゲート: 該当で大幅減点(完全破綻は実質除外)
     if gates:
@@ -194,8 +203,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
             composite = adjusted
 
     reasons = _reasons(sub, f, upside, extra_info)
-    if dsim >= 0.6:
-        reasons.append(f"注意: 過去の危険失敗パターンと類似(スコア{dsim:.2f}) — 慎重評価")
+    if dsim >= 0.02:
+        reasons.append(f"注意: 成功類似度を上回る危険失敗パターン類似(超過{dsim:.3f}) — 慎重評価")
     fail_conditions = _failure_conditions(f, sub)
 
     return {
