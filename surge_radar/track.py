@@ -38,8 +38,11 @@ def track_all(asof: str | None = None) -> dict:
     market_now = themes.market_regime(asof).get("score", 0.0)
 
     # バルクプリロード: 銘柄ごとのDB往復を排除 (旧来は track が15分かかっていた)
+    # open予測のrun_dateは最大でもJUDGE_WINDOW(20営業日)前まで(それより古いものは
+    # 既に判定確定済みのはず)。60暦日あれば十分な余裕を持ってカバーできるため、
+    # 全2年分ではなくこの範囲だけ取得しNeonのデータ転送量を削減する。
     codes = sorted({p["code"] for p in preds})
-    hist_map = ingest.load_history_bulk(codes)
+    hist_map = ingest.load_history_bulk(codes, lookback_days=60, as_of=asof)
     mat_map = materials.recent_material_scores_bulk(codes, asof)
     print(f"    [track] preloaded {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
 

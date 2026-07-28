@@ -75,6 +75,28 @@ def _load_model_from_db(version: str):
     return None
 
 
+def prune_old_model_blobs(keep: int = 4) -> dict:
+    """古いモデルバージョンの model_data(BYTEA、重い本体)だけを削除する。
+
+    Predictor は常に最新バージョンしか読み込まないため、古いバンドル本体は
+    実運用で一切参照されない。ただし version/trained_at/metrics/feature_importance
+    等の軽量メタデータは全件残すため、過去のモデル品質推移(AUC等)は引き続き
+    閲覧できる。Neon の Storage クォータ(累積型・月次リセットなし)を圧迫する
+    主因だったため、再学習のたびに自動実行して肥大化を防ぐ。
+    """
+    with db.cursor() as conn:
+        versions = conn.execute(
+            "SELECT version FROM model_meta WHERE model_data IS NOT NULL "
+            "ORDER BY trained_at DESC"
+        ).fetchall()
+        to_clear = [v["version"] for v in versions[keep:]]
+        if to_clear:
+            ph = ",".join(["%s"] * len(to_clear))
+            conn.execute(f"UPDATE model_meta SET model_data=NULL WHERE version IN ({ph})",
+                        tuple(to_clear))
+    return {"kept": min(len(versions), keep), "cleared": len(to_clear)}
+
+
 MATURE_BARS = 18  # 20営業日窓のうちこれ以上追跡できていれば"満期"とみなす
 
 
@@ -274,12 +296,19 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
             )
 
     # クラウドモード: モデルデータを DB に保存
+    prune_result = {}
     if DATABASE_URL:
         _save_model_to_db(version, bundle_path)
+        # 古いバージョンの重いBYTEA本体を自動整理 (Storageクォータの肥大化防止)
+        try:
+            prune_result = prune_old_model_blobs()
+        except Exception as e:
+            print(f"    [model] prune skip: {e}")
 
     return {"trained": True, "version": version, "n_samples": len(X),
             "n_pos": n_pos, "n_neg": n_neg, **metrics,
-            "top_features": list(importance.items())[:10], **result_extra}
+            "top_features": list(importance.items())[:10], **result_extra,
+            "pruned_old_blobs": prune_result}
 
 
 class Predictor:

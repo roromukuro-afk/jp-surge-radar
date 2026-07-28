@@ -130,23 +130,44 @@ def available_codes() -> list[str]:
     return [r["code"] for r in rows]
 
 
-def load_history_bulk(codes: list[str], chunk: int = 500) -> dict[str, "pd.DataFrame"]:
+def load_history_bulk(codes: list[str], chunk: int = 500,
+                      lookback_days: int | None = None,
+                      as_of: str | None = None) -> dict[str, "pd.DataFrame"]:
     """複数銘柄の日足をまとめて取得 (1クエリ/チャンク)。{code: df(昇順)} を返す。
 
     predict 等で銘柄ごとに load_history する代わりに使い、DB 往復を激減させる。
     価格データが無い銘柄はキーに含まれない。
+
+    lookback_days: 指定時は直近N暦日分のみ取得しDB転送量を削減する。
+    features.build_features は内部で直近260営業日分しか使わない(52週高値計算が
+    上限)ため、毎日の predict/track では全2年分を転送する必要がない。値は同一
+    (260営業日分あれば計算結果は全期間取得時と完全一致、検証済み)。
+    None なら従来通り全期間 (teacher.py の教師データ構築等、広い期間が必要な
+    用途向けにデフォルトは維持)。
+    as_of: 期間計算の基準日 (YYYY-MM-DD)。省略時は現在日時。過去日付での
+    バックフィル実行(predict.generate の asof 引数等)でも正しい範囲を取得する
+    ために、呼び出し側の asof をそのまま渡すこと (省略すると常に「今日」基準
+    になり、過去日付バックフィル時に必要な期間を取りこぼす)。
     """
     if not codes:
         return {}
     cols = ["date", "open", "high", "low", "close", "volume", "turnover"]
     by_code: dict[str, list] = {}
+    since_clause = ""
+    extra_params: tuple = ()
+    if lookback_days is not None:
+        ref = datetime.strptime(as_of, "%Y-%m-%d") if as_of else datetime.now()
+        cutoff = (ref - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        since_clause = " AND date >= %s"
+        extra_params = (cutoff,)
     for i in range(0, len(codes), chunk):
         part = codes[i:i + chunk]
         ph = ",".join(["%s"] * len(part))
         with db.cursor() as conn:
             rows = conn.execute(
                 f"SELECT code,date,open,high,low,close,volume,turnover FROM prices "
-                f"WHERE code IN ({ph}) ORDER BY code, date ASC", tuple(part)
+                f"WHERE code IN ({ph}){since_clause} ORDER BY code, date ASC",
+                tuple(part) + extra_params
             ).fetchall()
         for r in rows:
             by_code.setdefault(r["code"], []).append(r)

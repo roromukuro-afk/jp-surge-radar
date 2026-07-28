@@ -58,7 +58,11 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     # これがないと daily(~3000銘柄)で1万回近いDB往復が発生しタイムアウトする。
     name_map = _names()
     sector_map = _sectors_map()
-    hist_map = ingest.load_history_bulk(codes)
+    # 特徴量計算(features.build_features)は直近260営業日分しか使わない(52週高値が
+    # 上限)。450暦日あれば日本の年間取引日数(~245日)を考慮しても260営業日を十分
+    # カバーできる。全2年分を毎日転送するとNeonのデータ転送量を無駄に消費するため
+    # 必要な分だけ取得する(計算結果は全期間取得時と完全一致・検証済み)。
+    hist_map = ingest.load_history_bulk(codes, lookback_days=450, as_of=asof)
     mat_map = materials.recent_material_scores_bulk(codes, run_date) if use_materials else {}
     print(f"    [predict] preloaded: {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
 
