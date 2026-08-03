@@ -227,6 +227,7 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
 
         summary["prices"] = step_critical("ingest", update_prices_step,
                                           codes, price_range, price_pause)
+        summary["prune_prices"] = step("prune_old_prices", ingest.prune_old_prices)
 
         # --- WARNING steps: failure logs but pipeline continues ---
         if not skip_materials:

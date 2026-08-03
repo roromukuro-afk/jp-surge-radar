@@ -188,3 +188,18 @@ def stale_codes(codes: list[str], stale_days: int = 2) -> list[str]:
             "SELECT code FROM prices WHERE date >= %s GROUP BY code", (cutoff,)
         ).fetchall()}
     return [c for c in codes if c not in fresh]
+
+
+def prune_old_prices(keep_days: int = 760) -> dict:
+    """
+    保持期間より古い価格行を削除し、Neon等のストレージ使用量を一定に保つ。
+    features.build_features は直近260営業日分しか使わず、seed-teacher による
+    教師データ再構築も2年(730暦日)あれば十分なため、760日(バッファ込み)より
+    古い行は不要。日次パイプラインで毎回呼んでも削除件数はわずかで安価。
+    """
+    cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+    with db.cursor() as conn:
+        before = conn.execute("SELECT COUNT(*) n FROM prices WHERE date < %s", (cutoff,)).fetchone()["n"]
+        if before:
+            conn.execute("DELETE FROM prices WHERE date < %s", (cutoff,))
+    return {"cutoff": cutoff, "deleted": before}
