@@ -233,13 +233,14 @@ def _classify(sub: dict, f: dict, gates: list[str], upside: float, composite: fl
     fair_chart        = sub["chart"] >= 0.40
     good_volume       = sub["volume"] >= 0.50
     decent_volume     = sub["volume"] >= 0.35
-    # 2026-08-10: 生の特徴ベクトルは無関係な銘柄同士でも生コサイン類似度0.96超が
-    # 常態化しており(467銘柄の実測: min0.78/p50 0.98/p90 0.99)、旧閾値0.68/0.78は
-    # ほぼ全銘柄が通過してしまい"very_strong_ai"が実質無意味化 → B判定が300件中289件に
-    # 暴走した。実測分布に基づき暫定的に引き上げる(恒久対策は類似度計算自体の
-    # 見直しが必要、要フォローアップ)。
-    strong_ai         = sub["similarity"] >= 0.986
-    very_strong_ai    = sub["similarity"] >= 0.990
+    # 2026-08-10: 類似度NNから教師データで常に0固定な特徴量を除外する根本修正後も、
+    # 実測分布(467銘柄: min0.69/p50 0.86/p90 0.92)は旧設計時(0.68/0.78が
+    # 概ねp10-p25相当だったと推定される8/2時点の水準)より高め — 生コサイン類似度が
+    # 高圧縮になりやすい特徴空間の性質上、完全に元の分布には戻らない。実測分布の
+    # 中央値・上位1割程度を目安に再調整(旧0.68/0.78よりは高いが、修正前の
+    # 0.986/0.990ほど極端ではない)。要継続監視。
+    strong_ai         = sub["similarity"] >= 0.85
+    very_strong_ai    = sub["similarity"] >= 0.92
     high_prob         = sub.get("probability", 0) >= 0.80
     broke             = f.get("broke_resistance", 0)
     near              = f.get("near_breakout", 0) > 0.5

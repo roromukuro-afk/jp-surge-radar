@@ -23,6 +23,24 @@ from .features import FEATURE_KEYS, to_vector
 
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
 
+# 類似度NN(pos/neg_danger)専用の特徴量サブセット。
+# teacher.build_historical() は material/theme_tailwind/market_score を渡さないため、
+# これらに依存する特徴量は historical_pos/neg (教師データの大半) で常に0固定。
+# ライブサンプルが少数でも混入すると、StandardScalerがこれらの列の標準偏差を
+# 極小値として計算し(例: market_score scale_=0.0067)、本番クエリの実値
+# (例: market_score=-0.284) を標準化した際に数十標準偏差級の異常値へ爆発、
+# コサイン類似度計算全体を支配して全銘柄が「類似度0.98超」に張り付く不具合の原因
+# だった(2026-08-10)。類似度NNは常に全サンプルで意味のある値を持つ
+# チャート/価格系特徴量のみに限定することで、この訓練/クエリ分布の不一致を
+# 構造的に回避する。分類器(GradientBoostingClassifier)は引き続き全特徴量を使う。
+_SIMILARITY_EXCLUDE_KEYS = {
+    "material_raw", "pos_impact", "neg_impact", "has_fresh_material",
+    "dilution_flag", "going_concern_flag", "n_materials",
+    "theme_tailwind", "market_score",
+}
+SIMILARITY_FEATURE_INDICES = np.array(
+    [i for i, k in enumerate(FEATURE_KEYS) if k not in _SIMILARITY_EXCLUDE_KEYS])
+
 
 def _bundle_path(version: str):
     return MODEL_DIR / f"model_{version}.joblib"
@@ -240,11 +258,12 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
                 keep[i] = False
             elif c:
                 seen_live_codes.add(c)
-    pos = pos_all[keep]
+    pos = pos_all[keep][:, SIMILARITY_FEATURE_INDICES]
     nn = NearestNeighbors(n_neighbors=min(5, len(pos)), metric="cosine").fit(pos) if len(pos) else None
 
     # 危険失敗パターン類似度用NN (件数が少なすぎる場合はNone=無効)
-    neg_danger = Xs[danger_flags] if danger_flags.any() else np.empty((0, Xs.shape[1]))
+    neg_danger = (Xs[danger_flags][:, SIMILARITY_FEATURE_INDICES] if danger_flags.any()
+                 else np.empty((0, len(SIMILARITY_FEATURE_INDICES))))
     danger_nn = (NearestNeighbors(n_neighbors=min(5, len(neg_danger)), metric="cosine").fit(neg_danger)
                 if len(neg_danger) >= 5 else None)
 
@@ -369,7 +388,7 @@ class Predictor:
             return 0.0
         x = np.array([to_vector(feats)], dtype=float)
         x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        xs = self.bundle["scaler"].transform(x)
+        xs = self.bundle["scaler"].transform(x)[:, SIMILARITY_FEATURE_INDICES]
         dist, _ = self.bundle["nn"].kneighbors(xs, n_neighbors=min(5, len(self.bundle["pos"])))
         sim = 1 - float(np.mean(dist))
         return max(0.0, min(1.0, sim))
@@ -384,7 +403,7 @@ class Predictor:
             return 0.0
         x = np.array([to_vector(feats)], dtype=float)
         x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        xs = self.bundle["scaler"].transform(x)
+        xs = self.bundle["scaler"].transform(x)[:, SIMILARITY_FEATURE_INDICES]
         neg = self.bundle["neg_danger"]
         dist, _ = self.bundle["danger_nn"].kneighbors(xs, n_neighbors=min(5, len(neg)))
         sim = 1 - float(np.mean(dist))
