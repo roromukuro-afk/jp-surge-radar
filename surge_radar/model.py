@@ -101,12 +101,12 @@ MATURE_BARS = 18  # 20営業日窓のうちこれ以上追跡できていれば"
 
 
 def load_samples() -> tuple[np.ndarray, np.ndarray, list[str]]:
-    X, y, src, _danger, _bars = load_samples_full()
+    X, y, src, _danger, _bars, _codes = load_samples_full()
     return X, y, src
 
 
-def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, np.ndarray]:
-    """教師データを1クエリで取得し、X, y, source, danger_flag, bars_tracked を返す。
+def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, np.ndarray, list[str]]:
+    """教師データを1クエリで取得し、X, y, source, danger_flag, bars_tracked, code を返す。
 
     danger_flag: label==0 のうち "危険失敗"(danger_fail) だったか。
     historical は tags.result_class、live は tags.result に danger_fail が入る。
@@ -114,15 +114,17 @@ def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, 
     LEFT JOIN)。live_fail は必ず20日待って確定するため常に成熟(=20)。live_success は
     +20%到達した時点で即確定するため未成熟(早期)なものが大半 — sample_weights の
     早期成功割引に使う。historical/該当なしは None 扱い (NaN)。
+    code: 同一銘柄が短期間に何度もlive_successになった際、類似度NN(pos)側で
+    ほぼ同一の特徴ベクトルが重複登録されるのを防ぐための重複排除に使う。
     X/y/src と行対応が崩れないよう、必ず同一クエリ結果から同時に組み立てる。
     """
     with db.cursor() as conn:
         rows = conn.execute(
-            """SELECT t.features,t.label,t.source,t.tags,o.bars_tracked
+            """SELECT t.code,t.features,t.label,t.source,t.tags,o.bars_tracked
                FROM teacher_samples t
                LEFT JOIN prediction_outcomes o ON o.prediction_id=t.prediction_id"""
         ).fetchall()
-    X, y, src, danger, bars = [], [], [], [], []
+    X, y, src, danger, bars, codes = [], [], [], [], [], []
     for r in rows:
         feats = db.loadj(r["features"], {})
         if not feats:
@@ -132,6 +134,7 @@ def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, 
         y.append(label)
         src.append(r["source"])
         bars.append(r["bars_tracked"] if r["bars_tracked"] is not None else np.nan)
+        codes.append(r["code"] or "")
         if label == 0:
             tags = db.loadj(r["tags"], {})
             rc = tags.get("result_class") or tags.get("result")
@@ -140,9 +143,9 @@ def load_samples_full() -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, 
             danger.append(False)
     if not X:
         return (np.empty((0, len(FEATURE_KEYS))), np.empty((0,)), [],
-                np.empty((0,), dtype=bool), np.empty((0,)))
+                np.empty((0,), dtype=bool), np.empty((0,)), [])
     return (np.array(X, dtype=float), np.array(y, dtype=int), src,
-            np.array(danger, dtype=bool), np.array(bars, dtype=float))
+            np.array(danger, dtype=bool), np.array(bars, dtype=float), codes)
 
 
 def sample_weights(src: list[str], bars_tracked: np.ndarray | None = None) -> np.ndarray:
@@ -198,7 +201,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     from sklearn.preprocessing import StandardScaler
     from sklearn.neighbors import NearestNeighbors
 
-    X, y, src, danger_flags, bars_tracked = load_samples_full()
+    X, y, src, danger_flags, bars_tracked, codes = load_samples_full()
     n_pos = int((y == 1).sum()) if len(y) else 0
     n_neg = int((y == 0).sum()) if len(y) else 0
     if len(X) < 30 or n_pos < 8 or n_neg < 8:
@@ -219,7 +222,25 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     clf.fit(Xs, y, sample_weight=weights)
     train_auc = float(roc_auc_score(y, clf.predict_proba(Xs)[:, 1]))
 
-    pos = Xs[y == 1]
+    # 類似度NN用の正例プール: 同一銘柄が短期間に何度もlive_successになると
+    # ほぼ同一の特徴ベクトルが重複登録され、小さいk(=5)のNNではその銘柄の
+    # 重複が近傍を独占して similarity が異常に高騰する (B_very_strong_ai の暴走)。
+    # live_success は銘柄ごとに1件のみ残して重複を除く。classifier学習用の
+    # weights/X/yはそのまま(重複を減らさない)ので学習信号自体は変えない。
+    pos_mask = y == 1
+    pos_all = Xs[pos_mask]
+    pos_src = np.array(src)[pos_mask]
+    pos_codes = np.array(codes)[pos_mask]
+    keep = np.ones(len(pos_all), dtype=bool)
+    seen_live_codes: set[str] = set()
+    for i in range(len(pos_all)):
+        if pos_src[i] == "live_success":
+            c = pos_codes[i]
+            if c and c in seen_live_codes:
+                keep[i] = False
+            elif c:
+                seen_live_codes.add(c)
+    pos = pos_all[keep]
     nn = NearestNeighbors(n_neighbors=min(5, len(pos)), metric="cosine").fit(pos) if len(pos) else None
 
     # 危険失敗パターン類似度用NN (件数が少なすぎる場合はNone=無効)
