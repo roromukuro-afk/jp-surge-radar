@@ -101,22 +101,40 @@ def update_universe_step(stale_days: int = 7):
 def update_prices_step(codes: list[str], range_: str = "2y", pause: float = 0.25,
                        incremental: bool = True):
     """
-    incremental=True のとき、直近2日以内にデータがある銘柄はスキップ。
-    初回は全件取得(~2h)、以降は差分のみ(数分)。
+    incremental=True のとき、本日分の価格データが無い銘柄だけを再取得する
+    (stale_days=0: 前日以前のデータは常に古いとみなす。休日を挟むと1日で
+    2暦日以上ずれるため、日数ベースの猶予は誤判定の元になる — 2026-08-12参照)。
+    ほぼ全銘柄が対象になる日でも高速に終わるよう、増分取得は直近5日分のみ
+    ("5d") を取得する — 初回ブートストラップ相当の深い履歴は既に入っている前提。
+    incremental=False (初回セットアップ等) のときのみ指定された range_ (既定2y)
+    で全件フル取得する。
     """
     if incremental:
-        to_fetch = ingest.stale_codes(codes, stale_days=2)
+        to_fetch = ingest.stale_codes(codes)
         skipped_fresh = len(codes) - len(to_fetch)
         print(f"    [ingest] incremental: {len(to_fetch)} stale / {skipped_fresh} fresh (skipped)", flush=True)
+        # stale銘柄のうち、既存データが全く無い(新規上場等)ものは"5d"では
+        # 260営業日必要な特徴量計算に不足するため、フル範囲で取得する。
+        have_any = set(ingest.available_codes())
+        brand_new = [c for c in to_fetch if c not in have_any]
+        top_up = [c for c in to_fetch if c in have_any]
+        print(f"    [ingest] of which brand-new(full range)={len(brand_new)} top-up(5d)={len(top_up)}", flush=True)
     else:
-        to_fetch = codes
+        top_up, brand_new = [], codes
         skipped_fresh = 0
 
     def prog(i, total, ok, fail):
         print(f"    prices {i}/{total} ok={ok} fail={fail}", flush=True)
 
-    result = ingest.fetch_many(to_fetch, range_=range_, pause=pause,
-                               log_every=10, on_progress=prog)
+    result = {"ok": 0, "fail": 0, "rows": 0, "failed_codes": []}
+    if top_up:
+        r1 = ingest.fetch_many(top_up, range_="5d", pause=pause, log_every=10, on_progress=prog)
+        for k in ("ok", "fail", "rows"): result[k] += r1[k]
+        result["failed_codes"] += r1["failed_codes"]
+    if brand_new:
+        r2 = ingest.fetch_many(brand_new, range_=range_, pause=pause, log_every=10, on_progress=prog)
+        for k in ("ok", "fail", "rows"): result[k] += r2[k]
+        result["failed_codes"] += r2["failed_codes"]
     result["skipped_fresh"] = skipped_fresh
     return result
 

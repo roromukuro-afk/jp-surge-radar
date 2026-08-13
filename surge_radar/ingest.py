@@ -177,10 +177,18 @@ def load_history_bulk(codes: list[str], chunk: int = 500,
     return out
 
 
-def stale_codes(codes: list[str], stale_days: int = 2) -> list[str]:
+def stale_codes(codes: list[str], stale_days: int = 0) -> list[str]:
     """
-    直近 stale_days 日以内に価格データがないコードのみ返す。
+    最新の価格データが (today - stale_days) より古いコードのみ返す。
     既に最新データがある銘柄をスキップするための差分取得支援。
+
+    stale_days=0(既定)は「本日分の行が無ければ必ず再取得対象にする」という
+    意味。旧実装は stale_days=2 かつ date>=cutoff の境界が inclusive だった
+    ため、休日を挟んで最終営業日データがちょうど2暦日前になる週(例: 月曜取引→
+    火曜祝日→水曜)で「まだ新しい」と誤判定され、ほぼ全銘柄が再取得スキップ
+    される不具合があった(2026-08-12に発覚)。実際には平日の"通常"ケースでも
+    前日データが常に閾値内に収まってしまい、連日ほぼ全銘柄がスキップされ、
+    前日終値のまま予測していたことが判明している。
     """
     cutoff = (datetime.now() - timedelta(days=stale_days)).strftime("%Y-%m-%d")
     with db.cursor() as conn:
