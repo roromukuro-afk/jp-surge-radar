@@ -63,12 +63,20 @@ def latest_theme_regime() -> dict:
                          "vol_up": r["vol_up"], "date": r["date"]} for r in rows}
 
 
-def theme_tailwind_for(sectors: list[str], material_themes: list[str]) -> tuple[float, list[str]]:
+def theme_tailwind_for(sectors: list[str], material_themes: list[str],
+                       reg: dict | None = None) -> tuple[float, list[str]]:
     """
     銘柄の業種/材料テーマに対応するテーマ地合いスコア(0..1)と該当テーマ名を返す。
     複数銘柄に波及しているか(above_ma, vol_up)を重視。リーダー株の強さでは加点しない。
+
+    reg: 呼び出し側で1回だけ取得した latest_theme_regime() の結果。省略時は毎回
+    DBに問い合わせるが、predict.generate() のような数千銘柄ループ内で呼ぶ場合は
+    必ず reg を渡すこと — 省略すると銘柄数と同じ回数だけDB往復が発生し
+    (同じ日は結果が変わらないのに)、長時間の接続保持でNeon側から切断される
+    不具合の原因になっていた(2026-08-13)。
     """
-    reg = latest_theme_regime()
+    if reg is None:
+        reg = latest_theme_regime()
     if not reg:
         return 0.0, []
     text = " ".join(sectors) + " " + " ".join(material_themes)

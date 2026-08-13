@@ -64,6 +64,10 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     # 必要な分だけ取得する(計算結果は全期間取得時と完全一致・検証済み)。
     hist_map = ingest.load_history_bulk(codes, lookback_days=450, as_of=asof)
     mat_map = materials.recent_material_scores_bulk(codes, run_date) if use_materials else {}
+    # theme_tailwind_for は本来その日1回で足りる theme_regime を、以前は銘柄ごとに
+    # 再取得していた(数千回のDB往復 → ループ長時間化でNeon接続が切断される不具合の
+    # 原因だった、2026-08-13)。他のバルクプリロードと同様ここで1回だけ取得する。
+    theme_reg = themes.latest_theme_regime()
     print(f"    [predict] preloaded: {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
 
     scored = []
@@ -92,7 +96,7 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
 
         mat = mat_map.get(code, materials._empty_material_score()) if use_materials else None
         sectors = sector_map.get(code, [])
-        theme_tw, matched_themes = themes.theme_tailwind_for(sectors, (mat or {}).get("themes", []))
+        theme_tw, matched_themes = themes.theme_tailwind_for(sectors, (mat or {}).get("themes", []), reg=theme_reg)
 
         feats = features.build_features(df, idx, material=mat,
                                         theme_tailwind=theme_tw, market_score=market_score)
