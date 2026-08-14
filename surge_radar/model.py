@@ -261,6 +261,27 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     pos = pos_all[keep][:, SIMILARITY_FEATURE_INDICES]
     nn = NearestNeighbors(n_neighbors=min(5, len(pos)), metric="cosine").fit(pos) if len(pos) else None
 
+    # 類似度しきい値の自己較正: ライブサンプル(実際の市場コンテキスト付き)が
+    # 増減するたびに pos プールの分布が変わり、固定の magic number(0.68/0.78等)
+    # だと選別力を失う/暴走する不具合を2026-08-10・08-14に繰り返した。
+    # 再学習のたびに「典型的な銘柄(負例からランダム抽出)が pos プールに対して
+    # 実際どの程度似ているか」を測り直し、その分布の上位パーセンタイルを
+    # "strong"/"very_strong" の基準にする — 分布が動いても閾値が自動追従する。
+    sim_thresholds = {"strong": 0.68, "very_strong": 0.78}  # nn未構築時のフォールバック
+    if nn is not None and len(pos) >= 5:
+        neg_all = Xs[y == 0][:, SIMILARITY_FEATURE_INDICES]
+        if len(neg_all):
+            rng = np.random.default_rng(42)
+            sample_n = min(1000, len(neg_all))
+            sample_idx = rng.choice(len(neg_all), size=sample_n, replace=False)
+            sample = neg_all[sample_idx]
+            dist, _ = nn.kneighbors(sample, n_neighbors=min(5, len(pos)))
+            calib_sims = np.clip(1 - dist.mean(axis=1), 0.0, 1.0)
+            sim_thresholds = {
+                "strong": round(float(np.percentile(calib_sims, 85)), 4),
+                "very_strong": round(float(np.percentile(calib_sims, 95)), 4),
+            }
+
     # 危険失敗パターン類似度用NN (件数が少なすぎる場合はNone=無効)
     neg_danger = (Xs[danger_flags][:, SIMILARITY_FEATURE_INDICES] if danger_flags.any()
                  else np.empty((0, len(SIMILARITY_FEATURE_INDICES))))
@@ -287,6 +308,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
         "n_live_success_immature_discounted": n_live_success_immature,
         "n_danger_samples": int(len(neg_danger)),
         "live_sample_weight": round(live_weight, 3),
+        "sim_thresholds": sim_thresholds,
     }
 
     if dry_run:
@@ -299,7 +321,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
     version = datetime.now().strftime("v%Y%m%d_%H%M%S")
     bundle = {"clf": clf, "scaler": scaler, "nn": nn, "pos": pos,
               "danger_nn": danger_nn, "neg_danger": neg_danger,
-              "feature_keys": FEATURE_KEYS}
+              "feature_keys": FEATURE_KEYS, "sim_thresholds": sim_thresholds}
 
     # ローカルファイルに保存 (クラウドでも一時的に必要)
     bundle_path = _bundle_path(version)
@@ -374,6 +396,14 @@ class Predictor:
     @property
     def ready(self) -> bool:
         return self.bundle is not None
+
+    @property
+    def sim_thresholds(self) -> dict:
+        """再学習ごとに自己較正された similarity の strong/very_strong 基準値。
+        旧バンドル(未保存)や未学習時は安全なデフォルトにフォールバック。"""
+        if self.ready and self.bundle.get("sim_thresholds"):
+            return self.bundle["sim_thresholds"]
+        return {"strong": 0.68, "very_strong": 0.78}
 
     def predict_proba(self, feats: dict) -> float | None:
         if not self.ready:

@@ -136,7 +136,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
                     similarity: float | None = None,
                     extra_info: dict | None = None,
                     danger_similarity: float | None = None,
-                    path_trust: dict | None = None) -> dict:
+                    path_trust: dict | None = None,
+                    sim_thresholds: dict | None = None) -> dict:
     """
     1銘柄のフルスコアリング。サブスコア・総合・分類・理由・失敗条件を返す。
     extra_info: {"top_category", "top_title", "themes_matched", "name"} を受け取ると
@@ -147,6 +148,10 @@ def score_candidate(f: dict, ml_prob: float | None = None,
                 領域を共有するため)。差分でないと実質全候補が一律減点されてしまう。
     path_trust: classify_path -> trust_multiplier の辞書 (learning.get_trust_multipliers())。
                 実績(shrinkage込み)に応じてスコアを自律調整する。件数少ない pathは1.0付近。
+    sim_thresholds: {"strong","very_strong"} — model.Predictor.sim_thresholds。
+                ライブサンプルの増減でpos プールの類似度分布が動くたびに固定閾値が
+                選別力を失う/暴走する不具合(2026-08-10, 08-14)を受け、再学習ごとに
+                自己較正した値を都度渡す。省略時は安全なデフォルト(0.68/0.78)。
     """
     sub = {
         "material": material_score(f),
@@ -190,7 +195,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
         composite *= 0.25
 
     composite = _clip01(composite)
-    category, classify_path = _classify(sub, f, gates, upside, composite)
+    st = sim_thresholds or {"strong": 0.68, "very_strong": 0.78}
+    category, classify_path = _classify(sub, f, gates, upside, composite, st)
 
     # 自律学習フィードバック: 実績(shrinkage込み)に応じたpath別信頼度を反映。
     # 件数が少ないpathはmultiplierが1.0近傍のため実質無調整 (learning.py参照)。
@@ -199,7 +205,7 @@ def score_candidate(f: dict, ml_prob: float | None = None,
         trust_mult = path_trust[classify_path]
         if abs(trust_mult - 1.0) > 1e-6:
             adjusted = _clip01(composite * trust_mult)
-            category, classify_path = _classify(sub, f, gates, upside, adjusted)
+            category, classify_path = _classify(sub, f, gates, upside, adjusted, st)
             composite = adjusted
 
     reasons = _reasons(sub, f, upside, extra_info)
@@ -223,24 +229,25 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     }
 
 
-def _classify(sub: dict, f: dict, gates: list[str], upside: float, composite: float) -> tuple[str, str]:
+def _classify(sub: dict, f: dict, gates: list[str], upside: float, composite: float,
+             sim_thresholds: dict | None = None) -> tuple[str, str]:
     """カテゴリと分類パス名(B/C条件追跡用)を返す。"""
     if gates:
         return "E", "E_gate"
+    st = sim_thresholds or {"strong": 0.68, "very_strong": 0.78}
     strong_material   = sub["material"] >= 0.5
     decent_material   = sub["material"] >= 0.3
     good_chart        = sub["chart"] >= 0.55
     fair_chart        = sub["chart"] >= 0.40
     good_volume       = sub["volume"] >= 0.50
     decent_volume     = sub["volume"] >= 0.35
-    # 2026-08-10: 類似度NNから教師データで常に0固定な特徴量を除外する根本修正後も、
-    # 実測分布(467銘柄: min0.69/p50 0.86/p90 0.92)は旧設計時(0.68/0.78が
-    # 概ねp10-p25相当だったと推定される8/2時点の水準)より高め — 生コサイン類似度が
-    # 高圧縮になりやすい特徴空間の性質上、完全に元の分布には戻らない。実測分布の
-    # 中央値・上位1割程度を目安に再調整(旧0.68/0.78よりは高いが、修正前の
-    # 0.986/0.990ほど極端ではない)。要継続監視。
-    strong_ai         = sub["similarity"] >= 0.85
-    very_strong_ai    = sub["similarity"] >= 0.92
+    # 2026-08-14: 固定の magic number (0.68/0.78 →一時0.85/0.92) は、ライブサンプル
+    # 数が48→161件に増えるだけで pos プールの分布が動き再び暴走した(B 142→238)。
+    # 再学習のたびに model.py が典型的な負例に対する類似度分布を実測し直し、
+    # 上位パーセンタイルを自己較正した値(sim_thresholds)を使う — 手動チューニング
+    # に依存しない。
+    strong_ai         = sub["similarity"] >= st["strong"]
+    very_strong_ai    = sub["similarity"] >= st["very_strong"]
     high_prob         = sub.get("probability", 0) >= 0.80
     broke             = f.get("broke_resistance", 0)
     near              = f.get("near_breakout", 0) > 0.5

@@ -114,7 +114,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             "name": name_map.get(code, ""),
         }
         res = scoring.score_candidate(feats, ml_prob=prob, similarity=sim, extra_info=extra_info,
-                                      danger_similarity=dsim, path_trust=path_trust)
+                                      danger_similarity=dsim, path_trust=path_trust,
+                                      sim_thresholds=predictor.sim_thresholds)
         res["_code"] = code
         res["_close"] = close
         res["_feats"] = feats
