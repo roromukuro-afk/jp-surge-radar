@@ -206,6 +206,39 @@ def collect_materials_step(codes: list[str], pause: float = 0.3, days: int = 14,
             "since_date": since_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")}
 
 
+def rotation_materials_step(asof: str, exclude: set[str], bucket_size: int = 250) -> dict:
+    """
+    momentum pool(predict.py)は「今日すでに値動き/出来高が立ち上がった銘柄」しか
+    拾えないため、まだ静かなまま先に材料(見出し)だけ出ている銘柄を取りこぼす。
+    3000円以下という対象母集団自体が既に大きく絞られているとはいえ(~2700銘柄)、
+    全銘柄を毎日フル走査するのは物理的に不可能(1銘柄あたり4ソース並行で約13秒
+    実測 → 全銘柄で約10時間)。そこで daily_pipeline の成功実行回数を元にした
+    ローテーションで、数営業日〜2週間程度かけて全銘柄を必ず一巡させる
+    (2026-08-22, ユーザー指摘: 「3000円以下に絞っているのだから完璧に回してほしい」
+    に対応。momentum poolによる当日検知に加え、これで動いていない銘柄も
+    取りこぼしなく巡回できる)。
+    """
+    from .config import PRICE_CAP
+    with db.cursor() as conn:
+        n_runs = conn.execute(
+            "SELECT COUNT(*) n FROM job_logs WHERE job='daily_pipeline' AND status='ok'"
+        ).fetchone()["n"]
+        rows = conn.execute(
+            "SELECT DISTINCT ON (code) code, close FROM prices ORDER BY code, date DESC"
+        ).fetchall()
+    universe = sorted(r["code"] for r in rows if r["close"] and 0 < r["close"] <= PRICE_CAP)
+    universe = [c for c in universe if c not in exclude]
+    if not universe:
+        return {"rotation_codes": 0, "rotation_universe": 0}
+    n_buckets = max(1, -(-len(universe) // bucket_size))
+    idx = n_runs % n_buckets
+    targets = universe[idx * bucket_size: (idx + 1) * bucket_size]
+    res = materials.enrich_top_codes(targets, asof, max_codes=len(targets)) if targets else {}
+    res["rotation_bucket"] = f"{idx + 1}/{n_buckets}"
+    res["rotation_universe"] = len(universe)
+    return res
+
+
 def themes_step(asof: str):
     reg = themes.update_theme_regime(asof)
     return {"themes": len(reg)}
@@ -274,8 +307,10 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
         # predict内で当日の値動き/出来高立ち上がり銘柄(momentum pool)は既に
         # 見出し取得済みなので、二重にスクレイピングしないよう除外する。
         if not skip_materials:
+            covered: set[str] = set()
             try:
                 pre_enriched = set((summary.get("predict") or {}).get("materials_pre_enriched") or [])
+                covered |= pre_enriched
                 with db.cursor() as conn:
                     top_codes = [r["code"] for r in conn.execute(
                         "SELECT code FROM predictions WHERE run_date=%s ORDER BY score DESC LIMIT 100",
@@ -284,8 +319,17 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
                 if top_codes:
                     summary["enrich"] = step("enrich_materials",
                                              materials.enrich_top_codes, top_codes, asof)
+                covered |= set(top_codes)
             except Exception as e:
                 print(f"    [enrich] skip: {e}", flush=True)
+
+            # ローテーション巡回: momentum/top100に入らない静かな銘柄も、数営業日〜
+            # 2週間程度で必ず一度は見出しチェックが回ってくるようにする。
+            try:
+                summary["enrich_rotation"] = step(
+                    "enrich_rotation", rotation_materials_step, asof, covered)
+            except Exception as e:
+                print(f"    [enrich_rotation] skip: {e}", flush=True)
 
         pred_summary = summary.get("predict", {}) or {}
         n_ab = (pred_summary.get("A", 0) or 0) + (pred_summary.get("B", 0) or 0)

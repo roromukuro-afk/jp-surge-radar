@@ -17,9 +17,11 @@ on:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    # momentum pool事前取得+継続enrichで見出しスクレイピングが増えたため、
-    # パブリックリポジトリ(Actions分課金なし)を前提に安全余裕を拡大。
-    timeout-minutes: 150
+    # momentum pool(最大200銘柄)+top100継続enrich+全銘柄ローテーション巡回
+    # (250銘柄/回、約11回で3000円以下全銘柄~2700を一巡)を追加した分、
+    # ワーストケースで約140分と見積もり(実測13秒/銘柄×4ソース並行が前提)。
+    # パブリックリポジトリ(Actions分課金なし)なので余裕を持って180分に設定。
+    timeout-minutes: 180
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
