@@ -622,6 +622,85 @@ def fetch_kabutan_news(code: str, max_items: int = 10) -> list[dict]:
         return []
 
 
+def fetch_minkabu_news(code: str, max_items: int = 15) -> list[dict]:
+    """
+    みんかぶ(minkabu.jp)の銘柄別ニュースページから見出しを取得。
+    URL: https://minkabu.jp/stock/{code}/news
+    みんかぶは株探・フィスコ等複数の配信元記事の見出しを集約表示しているため、
+    本文が有料であっても見出し(タイトル)だけは無料で読める。既存の材料分析
+    (classify_material/materials_analysis.analyze)はタイトルのキーワード
+    マッチングで動くため、本文が取れなくても見出しだけで十分活用できる。
+    日付形式: "今日 08:30" または "08/21 16:35" (MM/DD HH:MM、年は現在年basis)。
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+    url = f"https://minkabu.jp/stock/{code}/news"
+    try:
+        r = requests.get(url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+        })
+        if r.status_code != 200:
+            return []
+        r.encoding = "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+        out = []
+        now = datetime.now()
+        for li in soup.select('ul.md_list[data-role="news-list-section"] > li')[:max_items]:
+            a = li.select_one(".title_box a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            if not title:
+                continue
+            href = a.get("href", "")
+            if href and not href.startswith("http"):
+                href = "https://minkabu.jp" + href
+            src_a = li.select_one("a.fcgl")
+            orig_source = src_a.get_text(strip=True) if src_a else "minkabu"
+            time_text = ""
+            for div in li.select(".flex.items-center"):
+                t = div.get_text(strip=True)
+                if t:
+                    time_text = t
+            date_str = now.strftime("%Y-%m-%d")
+            try:
+                if "今日" in time_text:
+                    date_str = now.strftime("%Y-%m-%d")
+                elif "/" in time_text:
+                    mmdd = time_text.split()[0]
+                    mm, dd = (int(x) for x in mmdd.split("/"))
+                    yr = now.year if mm <= now.month else now.year - 1
+                    date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
+            except Exception:
+                pass
+            out.append({
+                "date": date_str,
+                "title": title,
+                "url": href,
+                "source": f"minkabu({orig_source})" if orig_source != "minkabu" else "minkabu",
+            })
+        return out
+    except Exception:
+        return []
+
+
+def fetch_minkabu_batch(codes: list[str], pause: float = 1.0,
+                        max_codes: int = 100) -> dict[str, list[dict]]:
+    """複数銘柄のみんかぶニュースを取得。上位予測銘柄の補完用。"""
+    by_code: dict[str, list[dict]] = {}
+    for i, code in enumerate(codes[:max_codes], 1):
+        items = fetch_minkabu_news(code)
+        if items:
+            by_code[code] = items
+        if i % 20 == 0:
+            print(f"    [minkabu] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
+        time.sleep(pause)
+    return by_code
+
+
 def fetch_kabutan_batch(codes: list[str], pause: float = 1.0,
                         max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄の Kabutan ニュースを取得。上位予測銘柄の補完用。"""
@@ -656,9 +735,12 @@ def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
 
 def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     """
-    上位予測銘柄コードについて、Kabutan ニュースで材料を補完する。
+    上位予測銘柄コードについて、Kabutan/みんかぶニュースで材料を補完する。
     daily pipeline の predict 後に呼ぶことで材料スコアの精度を高める。
     TDnet が rate-limit されている場合の代替材料源として機能する。
+    みんかぶは株探・フィスコ等複数配信元の見出しを集約しているため、
+    本文が有料でも見出しキーワードだけで既存の材料分析にそのまま使える
+    (2026-08-22追加)。
     """
     if not codes:
         return {"enriched": 0}
@@ -671,8 +753,14 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
         n = store_materials(code, items)
         stored += n
 
+    # みんかぶ per-code ニュース (株探・フィスコ等の見出しを集約)
+    mk_by = fetch_minkabu_batch(targets, pause=0.8, max_codes=max_codes)
+    for code, items in mk_by.items():
+        n = store_materials(code, items)
+        stored += n
+
     return {"enriched_codes": len(targets), "materials_added": stored,
-            "kabutan_codes": len(kab_by)}
+            "kabutan_codes": len(kab_by), "minkabu_codes": len(mk_by)}
 
 
 def analyze_with_llm(code: str, materials_text: str) -> dict | None:
