@@ -1,0 +1,37 @@
+name: Materials Full Scan
+# 3000円以下の全銘柄(~2700)を、市場が閉まった直後に見出し材料で完全スクリーニング
+# する。1ジョブで全銘柄を回すと1銘柄あたりの実測所要時間が読みにくく
+# (ベンチマークでは2.25秒/銘柄だったが実データで18秒/銘柄まで悪化した実績あり)、
+# GitHub Actionsホスト型ランナーの1ジョブ6時間上限を超えるリスクがある。
+# そこでmatrix戦略で全銘柄をSHARD_COUNT分割し、並列ジョブとして同時実行する
+# ことで、1ジョブあたりの処理量を抑えたまま全銘柄を毎晩完全カバーする
+# (2026-08-22、ユーザー指摘「材料を完全にスクリーニングして」に対応)。
+# publicリポジトリなのでActions分課金なし、並行ジョブ数上限20未満に収める。
+on:
+  schedule:
+    # 15:30 JST (東証大引け) = 06:30 UTC
+    - cron: "30 6 * * 1-5"
+  workflow_dispatch: {}
+env:
+  SHARD_COUNT: "15"
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    env:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-pipeline.txt
+      - name: Scan shard
+        run: python scripts/materials_shard_scan.py ${{ matrix.shard }} ${{ env.SHARD_COUNT }}
