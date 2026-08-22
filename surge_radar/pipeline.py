@@ -206,19 +206,22 @@ def collect_materials_step(codes: list[str], pause: float = 0.3, days: int = 14,
             "since_date": since_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")}
 
 
-def rotation_materials_step(asof: str, exclude: set[str], bucket_size: int = 3500) -> dict:
+def rotation_materials_step(asof: str, exclude: set[str], bucket_size: int = 250) -> dict:
     """
     momentum pool(predict.py)は「今日すでに値動き/出来高が立ち上がった銘柄」しか
     拾えないため、まだ静かなまま先に材料(見出し)だけ出ている銘柄を取りこぼす。
-    3000円以下という対象母集団(~2700銘柄)を毎日フル走査できるよう、
-    サイト内並列化(_fetch_batch_concurrent)+store_materialsのバルク化により
-    1銘柄あたり約2.25秒まで高速化した(当初の逐次実装は約13秒/銘柄で
-    全銘柄約10時間かかり、GitHub Actions 1ジョブの6時間上限を超えていた)。
-    2746銘柄 × 2.25秒 ≈ 103分で全銘柄スキャンが1回のジョブ内に収まるため、
-    bucket_size を対象母集団より大きく設定し実質「毎晩フルスキャン」にする
-    (2026-08-22, ユーザー指摘:「3000円以下に絞っているのだから完璧に回して
-    ほしい」に対応)。ローテーション機構自体は将来母集団が増えた場合や
-    実行時間超過時のフォールバックとして温存する。
+
+    2026-08-22: 29銘柄の小規模ベンチマークでは並列化+store_materialsバルク化で
+    2.25秒/銘柄を達成し、一時的に全銘柄(~2700)を1晩でフルスキャンする設定
+    (bucket_size=3500)にしていた。しかし実際にmomentum pool(実銘柄200件)で
+    フル実行したところ、200銘柄のfetchに実測で約55-60分かかった(≒18秒/銘柄、
+    小規模ベンチマークの約8倍)。原因は値動き銘柄が小型株寄りでページが重い、
+    または同日中に同じサイトへ繰り返しテストした影響で応答が遅くなった可能性
+    などが考えられるが特定できていない。この実測値だと全銘柄(~2700)は
+    2700×18秒≈13.5時間となりGitHub Actionsの6時間上限を再び超えてしまうため、
+    安全側に倒してbucket_sizeを250に戻した(約11回=2週間程度で全銘柄を一巡)。
+    翌日以降の実際のGitHub Actions実行(クリーンな環境、本日のような連続テスト
+    による負荷がない)で実測時間を確認し、余裕があれば再度拡大を検討する。
     """
     from .config import PRICE_CAP
     with db.cursor() as conn:

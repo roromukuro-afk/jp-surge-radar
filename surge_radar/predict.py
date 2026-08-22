@@ -208,12 +208,17 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             "materials_pre_enriched": momentum_codes}
 
 
-def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 200) -> list[str]:
+def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 100) -> list[str]:
     """当日、出来高/値動きが立ち上がった銘柄を安価に抽出する(見出し先取り取得の対象選定用)。
 
     build_features/indicatorsのフル計算を待たず、価格・出来高の生データだけで
     「今日動き始めている」候補を絞り込む。これにより、まだ材料スコアが付いて
     いない(=まだ上位に入っていない)段階の銘柄にも見出し取得のチャンスを与える。
+
+    2026-08-22: 実データ(200銘柄)でフル検証したところ4ソース並行でも実測
+    18秒/銘柄(小規模ベンチマークの2.25秒の約8倍)かかり、200銘柄で約55-60分を
+    要した。原因未特定のため安全側に倒し top_n を200→100に戻す
+    (実行時間の見積り精度が確認できるまでの暫定値)。
     """
     scored = []
     for code, df in hist_map.items():
