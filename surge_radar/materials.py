@@ -462,45 +462,17 @@ def recent_material_scores_bulk(codes: list[str], asof: str, lookback_days: int 
 
 # ---------- EDINET (金融庁公式API、無料、登録不要) ----------
 
-def _edinet_code_map() -> dict[str, str]:
-    """
-    EDINET社名コード → TSE4桁証券コード のマッピング。24時間キャッシュ。
-    /api/v2/companies.json の stockExchangeAndSecuritiesCode を解析して構築。
-    例: "東証プライム 7203" → "7203"
-    """
-    from pathlib import Path
-    edinet_dir = Path(_cache_dir()).parent / "edinet"
-    edinet_dir.mkdir(exist_ok=True)
-    map_file = edinet_dir / "company_map.json"
-    cached = _load_cache(map_file, max_age_hours=24)
-    if cached:
-        return cached
-
-    data = _get_json("https://disclosure.edinet-fsa.go.jp/api/v2/companies.json",
-                     {}, retries=2, timeout=30, base_pause=1.5)
-    if not data:
-        return {}
-
-    mapping: dict[str, str] = {}
-    for co in data.get("results", []):
-        ecode = (co.get("edinetCode") or "").strip()
-        sec_info = (co.get("stockExchangeAndSecuritiesCode") or "").strip()
-        if not ecode or not sec_info:
-            continue
-        parts = sec_info.split()
-        for p in reversed(parts):
-            if p.isdigit() and len(p) == 4:
-                mapping[ecode] = p
-                break
-    _save_cache(map_file, mapping)
-    print(f"    [EDINET] company map: {len(mapping)} codes loaded")
-    return mapping
-
-
 def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
     """
     EDINET から指定日の開示文書一覧を取得。
-    edinetCode → TSE証券コード変換に companies.json マッピングを使用。
+    証券コードは documents.json 自体が返す secCode(5桁、先頭4桁がTSEコード)を
+    直接使う。2026-08-22判明: 従来は edinetCode→TSEコード変換に
+    companies.json という存在しないエンドポイントを叩いており
+    (2023年のEDINETリニューアルで廃止・JS依存のダウンロードに変更されたため
+    固定URLでは取得不能)、常に空マッピングで全件が捨てられ、EDINET連携は
+    実装当初から一件も機能していなかった。secCode はファンド関連の書類では
+    null になるが、上場企業自身の開示(有価証券報告書・変更報告書等)では
+    populated されており、それだけで十分実用になる。
     12時間キャッシュ。
     """
     from pathlib import Path
@@ -530,14 +502,12 @@ def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
         print(f"    [EDINET] fetch failed for {date}: {str(msg)[:80]}")
         return {}
 
-    # EDINET は edinetCode を返すので company map でTSEコードに変換
-    code_map = _edinet_code_map()
     by_code: dict[str, list[dict]] = {}
     for doc in data.get("results", []):
-        ecode = (doc.get("edinetCode") or "").strip()
-        code = code_map.get(ecode)
-        if not code:
+        sec_code = (doc.get("secCode") or "").strip()
+        if len(sec_code) < 4:
             continue
+        code = sec_code[:4]
         submit_date = (doc.get("submitDateTime") or "")[:10] or date
         desc = doc.get("docDescription") or ""
         filer = doc.get("filerName") or ""
