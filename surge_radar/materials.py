@@ -572,7 +572,7 @@ def fetch_yahoo_finance_news(code: str, count: int = 5) -> list[dict]:
         return []
 
 
-def fetch_kabutan_news(code: str, max_items: int = 10) -> list[dict]:
+def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dict]:
     """
     Kabutan.jp から銘柄別ニュース・開示を取得。
     URL: https://kabutan.jp/stock/news?code={code}  (銘柄固有ページ)
@@ -581,14 +581,17 @@ def fetch_kabutan_news(code: str, max_items: int = 10) -> list[dict]:
     実装当初から一件も取得できていなかった(enrich_top_codesが毎日
     "kabutan_codes: 0"を返し続けていた原因)。
     日付形式: "26/06/25 15:30" → YYYY-MM-DD
+    session: 渡された場合は接続を使い回す(TCP/TLSハンドシェイクの
+    再確立を避け、バッチ取得を大幅に高速化する。2026-08-22追加)。
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         return []
     url = f"https://kabutan.jp/stock/news?code={code}"
+    client = session or requests
     try:
-        r = requests.get(url, timeout=15, headers={
+        r = client.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "ja-JP,ja;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -642,7 +645,7 @@ def fetch_kabutan_news(code: str, max_items: int = 10) -> list[dict]:
         return []
 
 
-def fetch_minkabu_news(code: str, max_items: int = 15) -> list[dict]:
+def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dict]:
     """
     みんかぶ(minkabu.jp)の銘柄別ニュースページから見出しを取得。
     URL: https://minkabu.jp/stock/{code}/news
@@ -651,14 +654,16 @@ def fetch_minkabu_news(code: str, max_items: int = 15) -> list[dict]:
     (classify_material/materials_analysis.analyze)はタイトルのキーワード
     マッチングで動くため、本文が取れなくても見出しだけで十分活用できる。
     日付形式: "今日 08:30" または "08/21 16:35" (MM/DD HH:MM、年は現在年basis)。
+    session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         return []
     url = f"https://minkabu.jp/stock/{code}/news"
+    client = session or requests
     try:
-        r = requests.get(url, timeout=15, headers={
+        r = client.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
@@ -707,7 +712,7 @@ def fetch_minkabu_news(code: str, max_items: int = 15) -> list[dict]:
         return []
 
 
-def fetch_yahoo_jp_news(code: str, max_items: int = 20) -> list[dict]:
+def fetch_yahoo_jp_news(code: str, max_items: int = 20, session=None) -> list[dict]:
     """
     Yahoo!ファイナンス日本版(finance.yahoo.co.jp、既存の fetch_yahoo_finance_news
     が使う query1.finance.yahoo.com の検索APIとは別物)の銘柄別ニュースページ。
@@ -716,14 +721,16 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20) -> list[dict]:
     複数配信元の見出しを集約している(2026-08-22, 7203で実測確認)。件数も
     他ソースより多く出る傾向。CSS-modulesのクラス名はハッシュ付きで変わり
     うるため、末尾ハッシュに依存しないプレフィックス一致(正規表現)で選択する。
+    session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         return []
     url = f"https://finance.yahoo.co.jp/quote/{code}.T/news"
+    client = session or requests
     try:
-        r = requests.get(url, timeout=15, headers={
+        r = client.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
@@ -777,27 +784,43 @@ def _fetch_batch_concurrent(codes: list[str], fetch_fn, max_codes: int, label: s
     (2026-08-22: 3000円以下の全銘柄~2700をGitHub Actionsの1ジョブ上限
     6時間以内に一巡させるための高速化)。ワーカーごとにリクエスト後 pause
     秒待つことで、単純に全並列で叩くよりは礼儀を保つ。
+
+    requests.Session() で接続を使い回す(2026-08-22追加): これまで
+    requests.get() を毎回単独で呼んでおり、同じサイトへの2件目以降の
+    リクエストでもTCP/TLSハンドシェイクを毎回やり直していた。実データ
+    200銘柄での検証で1銘柄あたり実測18秒(小規模ベンチマークの8倍)と
+    大幅に遅かった原因の有力候補。HTTPAdapterでプール上限をmax_workers
+    以上に設定し、ワーカー間でSessionを共有してkeep-aliveを効かせる。
     """
     from concurrent.futures import ThreadPoolExecutor
+    from requests.adapters import HTTPAdapter
 
     targets = codes[:max_codes]
     by_code: dict[str, list[dict]] = {}
     if not targets:
         return by_code
 
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
     def _worker(code: str):
-        items = fetch_fn(code)
+        items = fetch_fn(code, session=session)
         time.sleep(pause)
         return code, items
 
     done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for code, items in ex.map(_worker, targets):
-            done += 1
-            if items:
-                by_code[code] = items
-            if done % 50 == 0:
-                print(f"    [{label}] {done}/{len(targets)} done, {len(by_code)} with news", flush=True)
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for code, items in ex.map(_worker, targets):
+                done += 1
+                if items:
+                    by_code[code] = items
+                if done % 50 == 0:
+                    print(f"    [{label}] {done}/{len(targets)} done, {len(by_code)} with news", flush=True)
+    finally:
+        session.close()
     return by_code
 
 
@@ -807,20 +830,22 @@ def fetch_yahoo_jp_batch(codes: list[str], pause: float = 0.5,
     return _fetch_batch_concurrent(codes, fetch_yahoo_jp_news, max_codes, "yahoojp", pause)
 
 
-def fetch_nikkei_news(code: str, max_items: int = 20) -> list[dict]:
+def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict]:
     """
     日本経済新聞 会社情報の銘柄別ニュース見出し一覧。
     URL: https://www.nikkei.com/nkd/company/news/?scode={code}
     本文は有料会員限定だが、見出し一覧自体は無料公開されている。時刻のみ
     (日付なし)で表示されるため「本日」扱いとする(一覧は直近ニュース中心)。
+    session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         return []
     url = f"https://www.nikkei.com/nkd/company/news/?scode={code}"
+    client = session or requests
     try:
-        r = requests.get(url, timeout=15, headers={
+        r = client.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
