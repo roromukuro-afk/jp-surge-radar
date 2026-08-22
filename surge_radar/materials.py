@@ -863,46 +863,51 @@ def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
 
 def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     """
-    上位予測銘柄コードについて、Kabutan/みんかぶニュースで材料を補完する。
-    daily pipeline の predict 後に呼ぶことで材料スコアの精度を高める。
-    TDnet が rate-limit されている場合の代替材料源として機能する。
-    みんかぶは株探・フィスコ等複数配信元の見出しを集約しているため、
-    本文が有料でも見出しキーワードだけで既存の材料分析にそのまま使える
-    (2026-08-22追加)。
+    上位予測銘柄コードについて、Kabutan/みんかぶ/Yahoo!JP/日経ニュースで材料を補完する。
+    daily pipeline の predict 後(および predict 内の momentum pool 事前取得)に
+    呼ぶことで材料スコアの精度を高める。TDnet が rate-limit されている場合の
+    代替材料源としても機能する。
+
+    4ソースは別ホストなので、サイトごとの1コード当たりリクエスト間隔(pause)は
+    変えずに、4ソースをスレッドで並行実行する(各サイトへのリクエスト頻度は
+    従来と同一 = 各サイトへの礼儀は変えない、単に「同時に4サイト分待つ」ことで
+    総所要時間を約1/4に圧縮する)。これにより同じ実行時間でより多くの銘柄を
+    カバーできる(2026-08-22)。
     """
     if not codes:
         return {"enriched": 0}
     targets = codes[:max_codes]
     stored = 0
 
-    # Kabutan.jp per-code ニュース (TDnetが使えない場合の主力補完)
-    kab_by = fetch_kabutan_batch(targets, pause=0.8, max_codes=max_codes)
-    for code, items in kab_by.items():
-        n = store_materials(code, items)
-        stored += n
+    from concurrent.futures import ThreadPoolExecutor
 
-    # みんかぶ per-code ニュース (株探・フィスコ等の見出しを集約)
-    mk_by = fetch_minkabu_batch(targets, pause=0.8, max_codes=max_codes)
-    for code, items in mk_by.items():
-        n = store_materials(code, items)
-        stored += n
+    fetchers = {
+        "kabutan": lambda: fetch_kabutan_batch(targets, pause=0.8, max_codes=max_codes),
+        "minkabu": lambda: fetch_minkabu_batch(targets, pause=0.8, max_codes=max_codes),
+        "yahoojp": lambda: fetch_yahoo_jp_batch(targets, pause=0.8, max_codes=max_codes),
+        "nikkei": lambda: fetch_nikkei_batch(targets, pause=0.8, max_codes=max_codes),
+    }
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=len(fetchers)) as ex:
+        futures = {name: ex.submit(fn) for name, fn in fetchers.items()}
+        for name, fut in futures.items():
+            try:
+                results[name] = fut.result()
+            except Exception as e:
+                print(f"    [enrich:{name}] error (non-fatal): {e}", flush=True)
+                results[name] = {}
 
-    # Yahoo!ファイナンス日本版 per-code ニュース (時事通信・トレーダーズウェブ・
-    # ダイヤモンドザイ・ロイター等を集約、件数も多い傾向)
-    yj_by = fetch_yahoo_jp_batch(targets, pause=0.8, max_codes=max_codes)
-    for code, items in yj_by.items():
-        n = store_materials(code, items)
-        stored += n
-
-    # 日本経済新聞 会社情報 見出し一覧 (本文は有料だが見出しは無料公開)
-    nk_by = fetch_nikkei_batch(targets, pause=0.8, max_codes=max_codes)
-    for code, items in nk_by.items():
-        n = store_materials(code, items)
-        stored += n
+    # store_materials は DB 書き込みなので並行実行後にメインスレッドでまとめて行う
+    for by_code in results.values():
+        for code, items in by_code.items():
+            n = store_materials(code, items)
+            stored += n
 
     return {"enriched_codes": len(targets), "materials_added": stored,
-            "kabutan_codes": len(kab_by), "minkabu_codes": len(mk_by),
-            "yahoojp_codes": len(yj_by), "nikkei_codes": len(nk_by)}
+            "kabutan_codes": len(results.get("kabutan", {})),
+            "minkabu_codes": len(results.get("minkabu", {})),
+            "yahoojp_codes": len(results.get("yahoojp", {})),
+            "nikkei_codes": len(results.get("nikkei", {}))}
 
 
 def analyze_with_llm(code: str, materials_text: str) -> dict | None:

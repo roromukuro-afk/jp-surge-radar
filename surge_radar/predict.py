@@ -75,7 +75,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
         momentum_codes = _momentum_pool(hist_map, asof)
         print(f"    [predict] momentum pool: {len(momentum_codes)} codes -> pre-scoring headline enrich", flush=True)
         try:
-            enrich_res = materials.enrich_top_codes(momentum_codes, run_date)
+            enrich_res = materials.enrich_top_codes(momentum_codes, run_date,
+                                                     max_codes=len(momentum_codes))
             print(f"    [predict] pre-enrich: {enrich_res}", flush=True)
         except Exception as e:
             print(f"    [predict] pre-enrich skip: {e}", flush=True)
@@ -207,7 +208,7 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             "materials_pre_enriched": momentum_codes}
 
 
-def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 100) -> list[str]:
+def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 200) -> list[str]:
     """当日、出来高/値動きが立ち上がった銘柄を安価に抽出する(見出し先取り取得の対象選定用)。
 
     build_features/indicatorsのフル計算を待たず、価格・出来高の生データだけで
@@ -237,7 +238,7 @@ def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 100) -> list[s
         avg_vol = float(sub.iloc[:-1]["volume"].mean()) if len(sub) > 1 else today_vol
         vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
         pct_chg = (close / prev_close - 1.0) if prev_close > 0 else 0.0
-        if vol_ratio < 1.5 and pct_chg < 0.03:
+        if vol_ratio < 1.3 and pct_chg < 0.02:
             continue
         momentum = vol_ratio * (1.0 + max(0.0, pct_chg))
         scored.append((momentum, code))

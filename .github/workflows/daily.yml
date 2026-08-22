@@ -17,8 +17,9 @@ on:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    # 通常は最適化後 ~20-25分で完了。CIランナーの個体差に対する安全余裕として75分。
-    timeout-minutes: 75
+    # momentum pool事前取得+継続enrichで見出しスクレイピングが増えたため、
+    # パブリックリポジトリ(Actions分課金なし)を前提に安全余裕を拡大。
+    timeout-minutes: 150
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
