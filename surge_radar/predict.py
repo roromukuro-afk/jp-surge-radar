@@ -63,6 +63,23 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     # カバーできる。全2年分を毎日転送するとNeonのデータ転送量を無駄に消費するため
     # 必要な分だけ取得する(計算結果は全期間取得時と完全一致・検証済み)。
     hist_map = ingest.load_history_bulk(codes, lookback_days=450, as_of=asof)
+
+    # 値動き/出来高の立ち上がり銘柄には、スコアリング前にKabutan/みんかぶ/Yahoo!JP/日経の
+    # 見出しを先取り取得する。EDINET/TDnetの正式開示は「発表→買われて出来高が上がって
+    # からランキング入り」という後追い構造の原因になるため、その日のうちに動き始めた
+    # 銘柄を安価な出来高/騰落率シグナルで先に拾い、材料スコアが今日のうちに反映される
+    # ようにする(2026-08-22)。predict後の enrich_top_codes(pipeline.py) は前日までの
+    # 上位銘柄向けの継続取得として残す。
+    momentum_codes: list[str] = []
+    if use_materials:
+        momentum_codes = _momentum_pool(hist_map, asof)
+        print(f"    [predict] momentum pool: {len(momentum_codes)} codes -> pre-scoring headline enrich", flush=True)
+        try:
+            enrich_res = materials.enrich_top_codes(momentum_codes, run_date)
+            print(f"    [predict] pre-enrich: {enrich_res}", flush=True)
+        except Exception as e:
+            print(f"    [predict] pre-enrich skip: {e}", flush=True)
+
     mat_map = materials.recent_material_scores_bulk(codes, run_date) if use_materials else {}
     # theme_tailwind_for は本来その日1回で足りる theme_regime を、以前は銘柄ごとに
     # 再取得していた(数千回のDB往復 → ループ長時間化でNeon接続が切断される不具合の
@@ -135,7 +152,8 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
         return {"run_date": run_date, "evaluated": len(scored), "skipped": skipped,
                 "stored": 0, "model_version": predictor.version or "rules",
-                "categories": cat_counts, "market_score": market_score, "dry_run": True}
+                "categories": cat_counts, "market_score": market_score, "dry_run": True,
+                "materials_pre_enriched": momentum_codes}
 
     # 保存: 全評価銘柄 (A/B/C/D/E全対象銘柄分類要件)
     _clear_today(run_date)
@@ -185,7 +203,46 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
         cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
     return {"run_date": run_date, "evaluated": len(scored), "skipped": skipped,
             "stored": stored, "model_version": predictor.version or "rules",
-            "categories": cat_counts, "market_score": market_score}
+            "categories": cat_counts, "market_score": market_score,
+            "materials_pre_enriched": momentum_codes}
+
+
+def _momentum_pool(hist_map: dict, asof: str | None, top_n: int = 100) -> list[str]:
+    """当日、出来高/値動きが立ち上がった銘柄を安価に抽出する(見出し先取り取得の対象選定用)。
+
+    build_features/indicatorsのフル計算を待たず、価格・出来高の生データだけで
+    「今日動き始めている」候補を絞り込む。これにより、まだ材料スコアが付いて
+    いない(=まだ上位に入っていない)段階の銘柄にも見出し取得のチャンスを与える。
+    """
+    scored = []
+    for code, df in hist_map.items():
+        if df is None or df.empty or len(df) < 26:
+            continue
+        if asof:
+            prior = df.index[df["date"] <= asof]
+            if len(prior) == 0:
+                continue
+            idx = int(prior[-1])
+        else:
+            idx = len(df) - 1
+        if idx < 25:
+            continue
+        sub = df.iloc[idx - 25: idx + 1]
+        today = sub.iloc[-1]
+        close = float(today["close"])
+        if close <= 0 or close > PRICE_CAP:
+            continue
+        prev_close = float(sub.iloc[-2]["close"]) if len(sub) > 1 else close
+        today_vol = float(today["volume"])
+        avg_vol = float(sub.iloc[:-1]["volume"].mean()) if len(sub) > 1 else today_vol
+        vol_ratio = today_vol / avg_vol if avg_vol > 0 else 1.0
+        pct_chg = (close / prev_close - 1.0) if prev_close > 0 else 0.0
+        if vol_ratio < 1.5 and pct_chg < 0.03:
+            continue
+        momentum = vol_ratio * (1.0 + max(0.0, pct_chg))
+        scored.append((momentum, code))
+    scored.sort(key=lambda x: -x[0])
+    return [c for _, c in scored[:top_n]]
 
 
 def _sectors(code: str) -> list[str]:

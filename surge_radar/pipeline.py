@@ -271,12 +271,16 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
                                            store=predict_store)
 
         # top-code material enrichment: warning only
+        # predict内で当日の値動き/出来高立ち上がり銘柄(momentum pool)は既に
+        # 見出し取得済みなので、二重にスクレイピングしないよう除外する。
         if not skip_materials:
             try:
+                pre_enriched = set((summary.get("predict") or {}).get("materials_pre_enriched") or [])
                 with db.cursor() as conn:
                     top_codes = [r["code"] for r in conn.execute(
                         "SELECT code FROM predictions WHERE run_date=%s ORDER BY score DESC LIMIT 100",
                         (asof,)).fetchall()]
+                top_codes = [c for c in top_codes if c not in pre_enriched]
                 if top_codes:
                     summary["enrich"] = step("enrich_materials",
                                              materials.enrich_top_codes, top_codes, asof)
