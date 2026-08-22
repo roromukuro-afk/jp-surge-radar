@@ -295,20 +295,37 @@ def fetch_tdnet_range(days: int = 14, max_pages: int = 5, per_page: int = 200,
 # ---------- DB保存 ----------
 
 def store_materials(code: str, items: list[dict]) -> int:
+    """
+    重複チェック+INSERTを項目ごとに逐次DB往復していたのを、コード単位で
+    まとめて処理するよう変更 (2026-08-22)。大型銘柄は見出しが数十件になる
+    ことがあり、逐次方式だと1銘柄で数十往復のDBラウンドトリップが発生して
+    全銘柄フルスキャンの実行時間を大きく圧迫していた
+    (item数 x 2往復 → 1往復のSELECT + 1回のバルクINSERTに削減)。
+    """
     if not items:
         return 0
     from . import materials_analysis as ma
-    n = 0
+
+    dates = list({it.get("date") for it in items if it.get("date")})
+    existing: set[tuple] = set()
     with db.cursor() as conn:
+        if dates:
+            ph = ",".join(["%s"] * len(dates))
+            rows = conn.execute(
+                f"SELECT date, title FROM materials WHERE code=%s AND date IN ({ph})",
+                (code, *dates)).fetchall()
+            existing = {(r["date"], r["title"]) for r in rows}
+
+        to_insert = []
+        seen = set()
         for it in items:
             title = it.get("title", "")
-            source = it.get("source", "tdnet")
-            # 同一(code,date,title)の重複はスキップ
-            dup = conn.execute(
-                "SELECT 1 FROM materials WHERE code=%s AND date=%s AND title=%s LIMIT 1",
-                (code, it.get("date"), title)).fetchone()
-            if dup:
+            date = it.get("date")
+            key = (date, title)
+            if key in existing or key in seen:
                 continue
+            seen.add(key)
+            source = it.get("source", "tdnet")
             cls = classify_material(title)
             a = ma.analyze(title, body=it.get("body", "") or "", source=source, code=code)
             # 旧分類(category)が空なら material_type を流用、スコアは強い方を採用
@@ -318,17 +335,19 @@ def store_materials(code: str, items: list[dict]) -> int:
             sentiment = cls["sentiment"] if cls["sentiment"] != 0 else a["sentiment"]
             risk = a["dilution_risk"]
             ai_comment = ma.make_ai_comment(a, {"reaction_known": 0})
-            conn.execute(
+            to_insert.append((code, date, source, category, title, it.get("url"),
+                              it.get("body", "") or "", sentiment, impact, persistence,
+                              a["unpriced"], a["connection"], a["material_type"], risk,
+                              ai_comment))
+
+        if to_insert:
+            conn.executemany(
                 """INSERT INTO materials
                    (code,date,source,category,title,url,body,sentiment,impact,persistence,
                     unpriced,connect,material_type,risk,ai_comment,updated_at)
                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)""",
-                (code, it.get("date"), source, category, title, it.get("url"),
-                 it.get("body", "") or "", sentiment, impact, persistence,
-                 a["unpriced"], a["connection"], a["material_type"], risk, ai_comment),
-            )
-            n += 1
-    return n
+                to_insert)
+    return len(to_insert)
 
 
 def _empty_material_score() -> dict:
@@ -748,18 +767,44 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20) -> list[dict]:
         return []
 
 
-def fetch_yahoo_jp_batch(codes: list[str], pause: float = 1.0,
+def _fetch_batch_concurrent(codes: list[str], fetch_fn, max_codes: int, label: str,
+                            pause: float = 0.5, max_workers: int = 3) -> dict[str, list[dict]]:
+    """
+    銘柄ごとの見出し取得を軽度に並列化する共通ヘルパー。
+
+    1サイトあたり同時3接続程度は通常のブラウザ閲覧と同程度で、各サイトへの
+    リクエスト頻度を過度に上げずに全体スループットを約3倍にできる
+    (2026-08-22: 3000円以下の全銘柄~2700をGitHub Actionsの1ジョブ上限
+    6時間以内に一巡させるための高速化)。ワーカーごとにリクエスト後 pause
+    秒待つことで、単純に全並列で叩くよりは礼儀を保つ。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = codes[:max_codes]
+    by_code: dict[str, list[dict]] = {}
+    if not targets:
+        return by_code
+
+    def _worker(code: str):
+        items = fetch_fn(code)
+        time.sleep(pause)
+        return code, items
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for code, items in ex.map(_worker, targets):
+            done += 1
+            if items:
+                by_code[code] = items
+            if done % 50 == 0:
+                print(f"    [{label}] {done}/{len(targets)} done, {len(by_code)} with news", flush=True)
+    return by_code
+
+
+def fetch_yahoo_jp_batch(codes: list[str], pause: float = 0.5,
                          max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄のYahoo!ファイナンス日本版ニュースを取得。上位予測銘柄の補完用。"""
-    by_code: dict[str, list[dict]] = {}
-    for i, code in enumerate(codes[:max_codes], 1):
-        items = fetch_yahoo_jp_news(code)
-        if items:
-            by_code[code] = items
-        if i % 20 == 0:
-            print(f"    [yahoojp] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
-        time.sleep(pause)
-    return by_code
+    return _fetch_batch_concurrent(codes, fetch_yahoo_jp_news, max_codes, "yahoojp", pause)
 
 
 def fetch_nikkei_news(code: str, max_items: int = 20) -> list[dict]:
@@ -801,46 +846,22 @@ def fetch_nikkei_news(code: str, max_items: int = 20) -> list[dict]:
         return []
 
 
-def fetch_nikkei_batch(codes: list[str], pause: float = 1.0,
+def fetch_nikkei_batch(codes: list[str], pause: float = 0.5,
                        max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄の日経ニュースを取得。上位予測銘柄の補完用。"""
-    by_code: dict[str, list[dict]] = {}
-    for i, code in enumerate(codes[:max_codes], 1):
-        items = fetch_nikkei_news(code)
-        if items:
-            by_code[code] = items
-        if i % 20 == 0:
-            print(f"    [nikkei] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
-        time.sleep(pause)
-    return by_code
+    return _fetch_batch_concurrent(codes, fetch_nikkei_news, max_codes, "nikkei", pause)
 
 
-def fetch_minkabu_batch(codes: list[str], pause: float = 1.0,
+def fetch_minkabu_batch(codes: list[str], pause: float = 0.5,
                         max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄のみんかぶニュースを取得。上位予測銘柄の補完用。"""
-    by_code: dict[str, list[dict]] = {}
-    for i, code in enumerate(codes[:max_codes], 1):
-        items = fetch_minkabu_news(code)
-        if items:
-            by_code[code] = items
-        if i % 20 == 0:
-            print(f"    [minkabu] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
-        time.sleep(pause)
-    return by_code
+    return _fetch_batch_concurrent(codes, fetch_minkabu_news, max_codes, "minkabu", pause)
 
 
-def fetch_kabutan_batch(codes: list[str], pause: float = 1.0,
+def fetch_kabutan_batch(codes: list[str], pause: float = 0.5,
                         max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄の Kabutan ニュースを取得。上位予測銘柄の補完用。"""
-    by_code: dict[str, list[dict]] = {}
-    for i, code in enumerate(codes[:max_codes], 1):
-        items = fetch_kabutan_news(code)
-        if items:
-            by_code[code] = items
-        if i % 20 == 0:
-            print(f"    [Kabutan] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
-        time.sleep(pause)
-    return by_code
+    return _fetch_batch_concurrent(codes, fetch_kabutan_news, max_codes, "kabutan", pause)
 
 
 def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
@@ -868,11 +889,13 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     呼ぶことで材料スコアの精度を高める。TDnet が rate-limit されている場合の
     代替材料源としても機能する。
 
-    4ソースは別ホストなので、サイトごとの1コード当たりリクエスト間隔(pause)は
-    変えずに、4ソースをスレッドで並行実行する(各サイトへのリクエスト頻度は
-    従来と同一 = 各サイトへの礼儀は変えない、単に「同時に4サイト分待つ」ことで
-    総所要時間を約1/4に圧縮する)。これにより同じ実行時間でより多くの銘柄を
-    カバーできる(2026-08-22)。
+    4ソースは別ホストなので4つをスレッドで並行実行し(サイト間の並列化)、
+    かつ各ソース内でも同一サイトへ最大3並列でリクエストする(サイト内の
+    軽度並列化、_fetch_batch_concurrent参照)。3000円以下の全銘柄(~2700)を
+    GitHub Actions 1ジョブの上限6時間以内で一巡させるための高速化
+    (2026-08-22: 「3000円以下に絞っているのだから完璧に(=全銘柄)回してほしい」
+    という指摘に対応。サイト間×サイト内の二重並列化で、単純逐次実行に比べ
+    総所要時間を概ね1/10程度に圧縮する狙い)。
     """
     if not codes:
         return {"enriched": 0}
@@ -882,10 +905,10 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     from concurrent.futures import ThreadPoolExecutor
 
     fetchers = {
-        "kabutan": lambda: fetch_kabutan_batch(targets, pause=0.8, max_codes=max_codes),
-        "minkabu": lambda: fetch_minkabu_batch(targets, pause=0.8, max_codes=max_codes),
-        "yahoojp": lambda: fetch_yahoo_jp_batch(targets, pause=0.8, max_codes=max_codes),
-        "nikkei": lambda: fetch_nikkei_batch(targets, pause=0.8, max_codes=max_codes),
+        "kabutan": lambda: fetch_kabutan_batch(targets, max_codes=max_codes),
+        "minkabu": lambda: fetch_minkabu_batch(targets, max_codes=max_codes),
+        "yahoojp": lambda: fetch_yahoo_jp_batch(targets, max_codes=max_codes),
+        "nikkei": lambda: fetch_nikkei_batch(targets, max_codes=max_codes),
     }
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=len(fetchers)) as ex:

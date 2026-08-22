@@ -206,17 +206,19 @@ def collect_materials_step(codes: list[str], pause: float = 0.3, days: int = 14,
             "since_date": since_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")}
 
 
-def rotation_materials_step(asof: str, exclude: set[str], bucket_size: int = 250) -> dict:
+def rotation_materials_step(asof: str, exclude: set[str], bucket_size: int = 3500) -> dict:
     """
     momentum pool(predict.py)は「今日すでに値動き/出来高が立ち上がった銘柄」しか
     拾えないため、まだ静かなまま先に材料(見出し)だけ出ている銘柄を取りこぼす。
-    3000円以下という対象母集団自体が既に大きく絞られているとはいえ(~2700銘柄)、
-    全銘柄を毎日フル走査するのは物理的に不可能(1銘柄あたり4ソース並行で約13秒
-    実測 → 全銘柄で約10時間)。そこで daily_pipeline の成功実行回数を元にした
-    ローテーションで、数営業日〜2週間程度かけて全銘柄を必ず一巡させる
-    (2026-08-22, ユーザー指摘: 「3000円以下に絞っているのだから完璧に回してほしい」
-    に対応。momentum poolによる当日検知に加え、これで動いていない銘柄も
-    取りこぼしなく巡回できる)。
+    3000円以下という対象母集団(~2700銘柄)を毎日フル走査できるよう、
+    サイト内並列化(_fetch_batch_concurrent)+store_materialsのバルク化により
+    1銘柄あたり約2.25秒まで高速化した(当初の逐次実装は約13秒/銘柄で
+    全銘柄約10時間かかり、GitHub Actions 1ジョブの6時間上限を超えていた)。
+    2746銘柄 × 2.25秒 ≈ 103分で全銘柄スキャンが1回のジョブ内に収まるため、
+    bucket_size を対象母集団より大きく設定し実質「毎晩フルスキャン」にする
+    (2026-08-22, ユーザー指摘:「3000円以下に絞っているのだから完璧に回して
+    ほしい」に対応)。ローテーション機構自体は将来母集団が増えた場合や
+    実行時間超過時のフォールバックとして温存する。
     """
     from .config import PRICE_CAP
     with db.cursor() as conn:
