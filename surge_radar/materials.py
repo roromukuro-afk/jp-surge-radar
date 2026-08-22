@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -687,6 +688,80 @@ def fetch_minkabu_news(code: str, max_items: int = 15) -> list[dict]:
         return []
 
 
+def fetch_yahoo_jp_news(code: str, max_items: int = 20) -> list[dict]:
+    """
+    Yahoo!ファイナンス日本版(finance.yahoo.co.jp、既存の fetch_yahoo_finance_news
+    が使う query1.finance.yahoo.com の検索APIとは別物)の銘柄別ニュースページ。
+    URL: https://finance.yahoo.co.jp/quote/{code}.T/news
+    株探・フィスコに加え、時事通信・トレーダーズウェブ・ダイヤモンド・ザイ等
+    複数配信元の見出しを集約している(2026-08-22, 7203で実測確認)。件数も
+    他ソースより多く出る傾向。CSS-modulesのクラス名はハッシュ付きで変わり
+    うるため、末尾ハッシュに依存しないプレフィックス一致(正規表現)で選択する。
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+    url = f"https://finance.yahoo.co.jp/quote/{code}.T/news"
+    try:
+        r = requests.get(url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+        })
+        if r.status_code != 200:
+            return []
+        r.encoding = "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+        out = []
+        now = datetime.now()
+        for it in soup.find_all(class_=re.compile(r"^_NewsItem_\w"))[:max_items]:
+            a = it if it.name == "a" else it.find("a", class_=re.compile(r"__link"))
+            h3 = it.find(class_=re.compile(r"__heading"))
+            if not h3:
+                continue
+            title = h3.get_text(strip=True)
+            if not title:
+                continue
+            href = a.get("href", "") if a else ""
+            if href and not href.startswith("http"):
+                href = "https://finance.yahoo.co.jp" + href
+            media_el = it.find(class_=re.compile(r"supplement--media"))
+            time_el = it.find(class_=re.compile(r"supplement--time"))
+            orig_source = media_el.get_text(strip=True) if media_el else "yahoo"
+            time_text = time_el.get_text(strip=True) if time_el else ""
+            date_str = now.strftime("%Y-%m-%d")
+            try:
+                if "/" in time_text:
+                    mm, dd = (int(x) for x in time_text.split("/"))
+                    yr = now.year if mm <= now.month else now.year - 1
+                    date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
+            except Exception:
+                pass
+            out.append({
+                "date": date_str,
+                "title": title,
+                "url": href,
+                "source": f"yahoojp({orig_source})" if orig_source != "yahoo" else "yahoojp",
+            })
+        return out
+    except Exception:
+        return []
+
+
+def fetch_yahoo_jp_batch(codes: list[str], pause: float = 1.0,
+                         max_codes: int = 100) -> dict[str, list[dict]]:
+    """複数銘柄のYahoo!ファイナンス日本版ニュースを取得。上位予測銘柄の補完用。"""
+    by_code: dict[str, list[dict]] = {}
+    for i, code in enumerate(codes[:max_codes], 1):
+        items = fetch_yahoo_jp_news(code)
+        if items:
+            by_code[code] = items
+        if i % 20 == 0:
+            print(f"    [yahoojp] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
+        time.sleep(pause)
+    return by_code
+
+
 def fetch_minkabu_batch(codes: list[str], pause: float = 1.0,
                         max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄のみんかぶニュースを取得。上位予測銘柄の補完用。"""
@@ -759,8 +834,16 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
         n = store_materials(code, items)
         stored += n
 
+    # Yahoo!ファイナンス日本版 per-code ニュース (時事通信・トレーダーズウェブ・
+    # ダイヤモンドザイ等を集約、件数も多い傾向)
+    yj_by = fetch_yahoo_jp_batch(targets, pause=0.8, max_codes=max_codes)
+    for code, items in yj_by.items():
+        n = store_materials(code, items)
+        stored += n
+
     return {"enriched_codes": len(targets), "materials_added": stored,
-            "kabutan_codes": len(kab_by), "minkabu_codes": len(mk_by)}
+            "kabutan_codes": len(kab_by), "minkabu_codes": len(mk_by),
+            "yahoojp_codes": len(yj_by)}
 
 
 def analyze_with_llm(code: str, materials_text: str) -> dict | None:
