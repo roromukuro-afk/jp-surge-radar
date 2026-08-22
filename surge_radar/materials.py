@@ -555,15 +555,18 @@ def fetch_yahoo_finance_news(code: str, count: int = 5) -> list[dict]:
 def fetch_kabutan_news(code: str, max_items: int = 10) -> list[dict]:
     """
     Kabutan.jp から銘柄別ニュース・開示を取得。
-    URL: https://kabutan.jp/stock/news%scode={code}  (銘柄固有ページ)
-    旧 news/%stype=1&code={code} は全銘柄で同じ市場ニュースを返すため使用不可。
+    URL: https://kabutan.jp/stock/news?code={code}  (銘柄固有ページ)
+    旧 news/?type=1&code={code} は全銘柄で同じ市場ニュースを返すため使用不可。
+    2026-08-22判明: URLの"?"が誤って"%s"という文字列になっており常に404で
+    実装当初から一件も取得できていなかった(enrich_top_codesが毎日
+    "kabutan_codes: 0"を返し続けていた原因)。
     日付形式: "26/06/25 15:30" → YYYY-MM-DD
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         return []
-    url = f"https://kabutan.jp/stock/news%scode={code}"
+    url = f"https://kabutan.jp/stock/news?code={code}"
     try:
         r = requests.get(url, timeout=15, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
