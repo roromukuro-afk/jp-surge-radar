@@ -762,6 +762,59 @@ def fetch_yahoo_jp_batch(codes: list[str], pause: float = 1.0,
     return by_code
 
 
+def fetch_nikkei_news(code: str, max_items: int = 20) -> list[dict]:
+    """
+    日本経済新聞 会社情報の銘柄別ニュース見出し一覧。
+    URL: https://www.nikkei.com/nkd/company/news/?scode={code}
+    本文は有料会員限定だが、見出し一覧自体は無料公開されている。時刻のみ
+    (日付なし)で表示されるため「本日」扱いとする(一覧は直近ニュース中心)。
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+    url = f"https://www.nikkei.com/nkd/company/news/?scode={code}"
+    try:
+        r = requests.get(url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+        })
+        if r.status_code != 200:
+            return []
+        r.encoding = "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+        out = []
+        today = datetime.now().strftime("%Y-%m-%d")
+        for li in soup.select("li.m-listFormat_item")[:max_items]:
+            a = li.select_one(".m-listItem_text_text a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            if not title:
+                continue
+            href = a.get("href", "")
+            if href and not href.startswith("http"):
+                href = "https://www.nikkei.com" + href
+            out.append({"date": today, "title": title, "url": href, "source": "nikkei"})
+        return out
+    except Exception:
+        return []
+
+
+def fetch_nikkei_batch(codes: list[str], pause: float = 1.0,
+                       max_codes: int = 100) -> dict[str, list[dict]]:
+    """複数銘柄の日経ニュースを取得。上位予測銘柄の補完用。"""
+    by_code: dict[str, list[dict]] = {}
+    for i, code in enumerate(codes[:max_codes], 1):
+        items = fetch_nikkei_news(code)
+        if items:
+            by_code[code] = items
+        if i % 20 == 0:
+            print(f"    [nikkei] {i}/{min(len(codes), max_codes)} done, {len(by_code)} with news")
+        time.sleep(pause)
+    return by_code
+
+
 def fetch_minkabu_batch(codes: list[str], pause: float = 1.0,
                         max_codes: int = 100) -> dict[str, list[dict]]:
     """複数銘柄のみんかぶニュースを取得。上位予測銘柄の補完用。"""
@@ -835,15 +888,21 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
         stored += n
 
     # Yahoo!ファイナンス日本版 per-code ニュース (時事通信・トレーダーズウェブ・
-    # ダイヤモンドザイ等を集約、件数も多い傾向)
+    # ダイヤモンドザイ・ロイター等を集約、件数も多い傾向)
     yj_by = fetch_yahoo_jp_batch(targets, pause=0.8, max_codes=max_codes)
     for code, items in yj_by.items():
         n = store_materials(code, items)
         stored += n
 
+    # 日本経済新聞 会社情報 見出し一覧 (本文は有料だが見出しは無料公開)
+    nk_by = fetch_nikkei_batch(targets, pause=0.8, max_codes=max_codes)
+    for code, items in nk_by.items():
+        n = store_materials(code, items)
+        stored += n
+
     return {"enriched_codes": len(targets), "materials_added": stored,
             "kabutan_codes": len(kab_by), "minkabu_codes": len(mk_by),
-            "yahoojp_codes": len(yj_by)}
+            "yahoojp_codes": len(yj_by), "nikkei_codes": len(nk_by)}
 
 
 def analyze_with_llm(code: str, materials_text: str) -> dict | None:
