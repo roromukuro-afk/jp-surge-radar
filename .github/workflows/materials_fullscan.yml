@@ -7,6 +7,11 @@ name: Materials Full Scan
 # ことで、1ジョブあたりの処理量を抑えたまま全銘柄を毎晩完全カバーする
 # (2026-08-22、ユーザー指摘「材料を完全にスクリーニングして」に対応)。
 # publicリポジトリなのでActions分課金なし、並行ジョブ数上限20未満に収める。
+#
+# 対象銘柄一覧は prepare ジョブが1回だけクエリしてartifact化し、scan の15並列
+# ジョブはそれを読むだけ(2026-08-24修正: 以前は各シャードが独立に prices
+# テーブル全体をクエリしており、毎晩15回の全表スキャンがNeonデータ転送
+# クォータ超過の一因になった)。
 on:
   # 2026-08-24: Neonのデータ転送クォータ超過で本番サイトが500エラーに(このワーク
   # フロー自身の初回実行を含む、今日のローカル検証の積み重ねが原因の可能性が高い)。
@@ -18,7 +23,29 @@ on:
 env:
   SHARD_COUNT: "15"
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-pipeline.txt
+      - name: Prepare universe list (1 query, not 15)
+        run: python scripts/materials_universe_prepare.py universe.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: universe
+          path: universe.json
+          retention-days: 1
   scan:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -36,5 +63,8 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-pipeline.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: universe
       - name: Scan shard
-        run: python scripts/materials_shard_scan.py ${{ matrix.shard }} ${{ env.SHARD_COUNT }}
+        run: python scripts/materials_shard_scan.py ${{ matrix.shard }} ${{ env.SHARD_COUNT }} "" universe.json

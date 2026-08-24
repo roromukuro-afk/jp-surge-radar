@@ -8,8 +8,16 @@ shard_count個に分割し、matrixで並列実行することで、1ジョブ�
 抑えたまま全銘柄を1晩で完全カバーする(2026-08-22、ユーザー指摘「材料を完全に
 スクリーニングして」に対応)。
 
-Usage: python scripts/materials_shard_scan.py <shard_index> <shard_count> [asof]
+銘柄一覧は materials_universe_prepare.py が1回だけクエリしてartifact化した
+JSONファイルを受け取る(--universe-file)。指定が無い場合のみ、このスクリプト
+単体でも動くよう自前でクエリするフォールバックを残す(手動実行・デバッグ用。
+2026-08-24: 以前はシャードごとに毎回このクエリを打っており、15並列で prices
+テーブル全体を毎晩15回スキャンしていたことがNeonデータ転送クォータ超過の
+一因と判明したため、通常経路ではファイル受け渡しに変更)。
+
+Usage: python scripts/materials_shard_scan.py <shard_index> <shard_count> [asof] [universe_file]
 """
+import json
 import os
 import sys
 
@@ -25,15 +33,21 @@ from surge_radar.config import PRICE_CAP
 
 shard_index = int(sys.argv[1])
 shard_count = int(sys.argv[2])
-asof = sys.argv[3] if len(sys.argv) > 3 else datetime.now().strftime("%Y-%m-%d")
+asof = (sys.argv[3] if len(sys.argv) > 3 else "") or datetime.now().strftime("%Y-%m-%d")
+universe_file = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
 
 db.init_db()
 
-with db.cursor() as conn:
-    rows = conn.execute(
-        "SELECT DISTINCT ON (code) code, close FROM prices ORDER BY code, date DESC"
-    ).fetchall()
-universe = sorted(r["code"] for r in rows if r["close"] and 0 < r["close"] <= PRICE_CAP)
+if universe_file:
+    with open(universe_file, encoding="utf-8") as f:
+        universe = json.load(f)
+else:
+    with db.cursor() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (code) code, close FROM prices ORDER BY code, date DESC"
+        ).fetchall()
+    universe = sorted(r["code"] for r in rows if r["close"] and 0 < r["close"] <= PRICE_CAP)
+
 shard_codes = [c for i, c in enumerate(universe) if i % shard_count == shard_index]
 
 print(f"shard {shard_index}/{shard_count}: {len(shard_codes)} codes "
