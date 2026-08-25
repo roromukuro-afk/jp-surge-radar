@@ -294,6 +294,27 @@ def fetch_tdnet_range(days: int = 14, max_pages: int = 5, per_page: int = 200,
 
 # ---------- DB保存 ----------
 
+# Yahoo!JP/日経の銘柄別ニュースページには、その銘柄と無関係な市場全体の
+# ランキング・市況ダイジェスト記事が関連コンテンツとして混在表示される
+# (2026-08-25判明: 3276(JPMC)に「出来高変化率ランキング〜ファンディーノ、
+# 大豊工業などがランクイン」、7356(Retty)に「前場のランキング【値上がり率】」
+# が「その銘柄の材料」として保存されており、直近材料の5.8%・417銘柄に影響、
+# 本日のA/B候補の8/81で最高スコア材料がこの種の無関係記事だった)。
+# タイトルにその銘柄名が一切含まれない市場全体ダイジェストは、個別銘柄の
+# 材料として評価する意味がないため保存段階で除外する。
+_GENERIC_DIGEST_TITLE_PATTERNS = (
+    "ランキング", "値上がり率", "値下がり率", "出来高変化率",
+    "東証グロース（大引け）", "東証グロース（前引け）",
+    "東証プライム（大引け）", "東証プライム（前引け）",
+    "東証スタンダード（大引け）", "東証スタンダード（前引け）",
+    "東京株式（", "日経平均株価", "日経平均先物",
+)
+
+
+def _is_generic_market_digest(title: str) -> bool:
+    return any(p in title for p in _GENERIC_DIGEST_TITLE_PATTERNS)
+
+
 def store_materials(code: str, items: list[dict]) -> int:
     """
     重複チェック+INSERTを項目ごとに逐次DB往復していたのを、コード単位で
@@ -301,7 +322,14 @@ def store_materials(code: str, items: list[dict]) -> int:
     ことがあり、逐次方式だと1銘柄で数十往復のDBラウンドトリップが発生して
     全銘柄フルスキャンの実行時間を大きく圧迫していた
     (item数 x 2往復 → 1往復のSELECT + 1回のバルクINSERTに削減)。
+
+    市場全体のランキング・市況ダイジェスト記事(_is_generic_market_digest)は
+    個別銘柄の材料として意味がないため、ここで除外してから処理する
+    (2026-08-25追加)。
     """
+    if not items:
+        return 0
+    items = [it for it in items if not _is_generic_market_digest(it.get("title", ""))]
     if not items:
         return 0
     from . import materials_analysis as ma
