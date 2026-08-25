@@ -584,6 +584,7 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
     session: 渡された場合は接続を使い回す(TCP/TLSハンドシェイクの
     再確立を避け、バッチ取得を大幅に高速化する。2026-08-22追加)。
     """
+    global _kabutan_logged_error
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -597,7 +598,6 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
         if r.status_code != 200:
-            global _kabutan_logged_error
             if not _kabutan_logged_error:
                 _kabutan_logged_error = True
                 print(f"    [kabutan] DIAG non-200: code={code} status={r.status_code} "
@@ -647,7 +647,6 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
             })
         return out
     except Exception as e:
-        global _kabutan_logged_error
         if not _kabutan_logged_error:
             _kabutan_logged_error = True
             print(f"    [kabutan] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
@@ -669,6 +668,7 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
     日付形式: "今日 08:30" または "08/21 16:35" (MM/DD HH:MM、年は現在年basis)。
     session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
+    global _minkabu_logged_error
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -681,7 +681,6 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
         if r.status_code != 200:
-            global _minkabu_logged_error
             if not _minkabu_logged_error:
                 _minkabu_logged_error = True
                 print(f"    [minkabu] DIAG non-200: code={code} status={r.status_code} "
@@ -727,7 +726,6 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
             })
         return out
     except Exception as e:
-        global _minkabu_logged_error
         if not _minkabu_logged_error:
             _minkabu_logged_error = True
             print(f"    [minkabu] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
