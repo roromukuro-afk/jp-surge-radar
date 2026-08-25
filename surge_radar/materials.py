@@ -929,18 +929,26 @@ def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
 
 def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     """
-    上位予測銘柄コードについて、Kabutan/みんかぶ/Yahoo!JP/日経ニュースで材料を補完する。
+    上位予測銘柄コードについて、Yahoo!JP/日経ニュースで材料を補完する。
     daily pipeline の predict 後(および predict 内の momentum pool 事前取得)に
     呼ぶことで材料スコアの精度を高める。TDnet が rate-limit されている場合の
     代替材料源としても機能する。
 
-    4ソースは別ホストなので4つをスレッドで並行実行し(サイト間の並列化)、
-    かつ各ソース内でも同一サイトへ最大3並列でリクエストする(サイト内の
-    軽度並列化、_fetch_batch_concurrent参照)。3000円以下の全銘柄(~2700)を
-    GitHub Actions 1ジョブの上限6時間以内で一巡させるための高速化
-    (2026-08-22: 「3000円以下に絞っているのだから完璧に(=全銘柄)回してほしい」
-    という指摘に対応。サイト間×サイト内の二重並列化で、単純逐次実行に比べ
-    総所要時間を概ね1/10程度に圧縮する狙い)。
+    2026-08-25判明: kabutan/みんかぶはGitHub Actionsのクラウド実行環境からの
+    アクセスをBot対策でブロックしている(kabutan: JS実行チャレンジページ
+    「Human Verification」、Playwrightヘッドレスブラウザで実際にJSを実行
+    させても解決せず=人間の実操作を要求する本格的なチャレンジの可能性が高い。
+    みんかぶ: 単純なIPブロック403 Forbidden、ブラウザエンジンでも無関係に
+    ブロックされ続ける)。ローカルPCからは正常に取得できるため、リポジトリの
+    コードにバグがあるわけではなくクラウドIPのレピュテーション判定が原因と
+    確認済み。技術的に自動化での突破が現実的でないため、この2ソースは
+    enrich_top_codes からは呼ばない(fetch_kabutan_news/fetch_minkabu_news
+    自体は関数として残してあり、ローカルでの単発確認や将来の自己ホスト
+    ランナー運用では引き続き使える)。
+
+    2ソースは別ホストなのでスレッドで並行実行し(サイト間の並列化)、
+    かつサイト内でも同一サイトへ最大3並列でリクエストする(サイト内の
+    軽度並列化、_fetch_batch_concurrent参照)。
     """
     if not codes:
         return {"enriched": 0}
@@ -950,8 +958,6 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     from concurrent.futures import ThreadPoolExecutor
 
     fetchers = {
-        "kabutan": lambda: fetch_kabutan_batch(targets, max_codes=max_codes),
-        "minkabu": lambda: fetch_minkabu_batch(targets, max_codes=max_codes),
         "yahoojp": lambda: fetch_yahoo_jp_batch(targets, max_codes=max_codes),
         "nikkei": lambda: fetch_nikkei_batch(targets, max_codes=max_codes),
     }
@@ -972,8 +978,6 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
             stored += n
 
     return {"enriched_codes": len(targets), "materials_added": stored,
-            "kabutan_codes": len(results.get("kabutan", {})),
-            "minkabu_codes": len(results.get("minkabu", {})),
             "yahoojp_codes": len(results.get("yahoojp", {})),
             "nikkei_codes": len(results.get("nikkei", {}))}
 
