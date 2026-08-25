@@ -31,6 +31,8 @@
     {% if overview.last_pipeline %}
       {% if overview.last_pipeline.status == 'ok' %}
       <span class="chip bg-good/20 text-good border border-good/30">Pipeline OK</span>
+      {% elif overview.last_pipeline.status == 'running' %}
+      <span class="chip bg-warn/20 text-warn border border-warn/30">Pipeline 実行中</span>
       {% else %}
       <span class="chip bg-bad/20 text-bad border border-bad/30">Pipeline ERR</span>
       {% endif %}
