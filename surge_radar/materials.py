@@ -572,6 +572,53 @@ def fetch_yahoo_finance_news(code: str, count: int = 5) -> list[dict]:
         return []
 
 
+def _parse_kabutan_html(html: str, max_items: int) -> list[dict]:
+    """Kabutanの銘柄別ニュースHTMLから見出し一覧を抽出する(requests/Playwright共用)。"""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    now = datetime.now()
+    for row in soup.select(".s_news_list tr")[:max_items]:
+        a = row.find("a")
+        time_el = row.find(class_="news_time")
+        if not a:
+            continue
+        title = a.get_text(strip=True)
+        if not title:
+            continue
+        href = a.get("href", "")
+        if href and not href.startswith("http"):
+            href = "https://kabutan.jp" + href
+        # Date format: "26/06/25 15:30" (YY/MM/DD HH:MM)
+        date_raw = time_el.get_text(strip=True) if time_el else ""
+        date_str = now.strftime("%Y-%m-%d")
+        if date_raw:
+            try:
+                parts = date_raw.split("/")
+                if len(parts) == 3:
+                    # YY/MM/DD HH:MM
+                    yy = int(parts[0])
+                    yr = 2000 + yy
+                    mm = int(parts[1])
+                    dd_rest = parts[2].split()
+                    dd = int(dd_rest[0])
+                else:
+                    # Fallback: MM/DD HH:MM
+                    mm = int(parts[0])
+                    dd = int(parts[1].split()[0])
+                    yr = now.year if mm <= now.month else now.year - 1
+                date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
+            except Exception:
+                pass
+        out.append({
+            "date": date_str,
+            "title": title,
+            "url": href,
+            "source": "kabutan",
+        })
+    return out
+
+
 def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dict]:
     """
     Kabutan.jp から銘柄別ニュース・開示を取得。
@@ -604,48 +651,7 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
                       f"len={len(r.text)} body_head={r.text[:200]!r}", flush=True)
             return []
         r.encoding = "utf-8"
-        soup = BeautifulSoup(r.text, "html.parser")
-        out = []
-        now = datetime.now()
-        for row in soup.select(".s_news_list tr")[:max_items]:
-            a = row.find("a")
-            time_el = row.find(class_="news_time")
-            if not a:
-                continue
-            title = a.get_text(strip=True)
-            if not title:
-                continue
-            href = a.get("href", "")
-            if href and not href.startswith("http"):
-                href = "https://kabutan.jp" + href
-            # Date format: "26/06/25 15:30" (YY/MM/DD HH:MM)
-            date_raw = time_el.get_text(strip=True) if time_el else ""
-            date_str = now.strftime("%Y-%m-%d")
-            if date_raw:
-                try:
-                    parts = date_raw.split("/")
-                    if len(parts) == 3:
-                        # YY/MM/DD HH:MM
-                        yy = int(parts[0])
-                        yr = 2000 + yy
-                        mm = int(parts[1])
-                        dd_rest = parts[2].split()
-                        dd = int(dd_rest[0])
-                    else:
-                        # Fallback: MM/DD HH:MM
-                        mm = int(parts[0])
-                        dd = int(parts[1].split()[0])
-                        yr = now.year if mm <= now.month else now.year - 1
-                    date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
-                except Exception:
-                    pass
-            out.append({
-                "date": date_str,
-                "title": title,
-                "url": href,
-                "source": "kabutan",
-            })
-        return out
+        return _parse_kabutan_html(r.text, max_items)
     except Exception as e:
         if not _kabutan_logged_error:
             _kabutan_logged_error = True
@@ -905,8 +911,72 @@ def fetch_minkabu_batch(codes: list[str], pause: float = 0.5,
 
 def fetch_kabutan_batch(codes: list[str], pause: float = 0.5,
                         max_codes: int = 100) -> dict[str, list[dict]]:
-    """複数銘柄の Kabutan ニュースを取得。上位予測銘柄の補完用。"""
-    return _fetch_batch_concurrent(codes, fetch_kabutan_news, max_codes, "kabutan", pause)
+    """
+    複数銘柄の Kabutan ニュースを取得。上位予測銘柄の補完用。
+
+    2026-08-25判明: GitHub Actionsのクラウド実行環境からのアクセスは
+    Kabutan側のBot対策(「Human Verification」チャレンジページ、HTTP 405)に
+    ブロックされ、requestsでは常に0件になっていた(ローカルPCからは正常に
+    取得できていた=IPレピュテーションによる判定)。Playwrightのヘッドレス
+    ブラウザで実際にJSを実行させることでチャレンジ突破を試みる。
+    playwright未インストールの環境(ローカル簡易チェック等)では従来の
+    requestsベースにフォールバックする。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("    [kabutan] playwright not available, falling back to requests "
+              "(may be blocked from cloud CI environments)", flush=True)
+        return _fetch_batch_concurrent(codes, fetch_kabutan_news, max_codes, "kabutan", pause)
+
+    targets = codes[:max_codes]
+    by_code: dict[str, list[dict]] = {}
+    if not targets:
+        return by_code
+
+    global _kabutan_logged_error
+    done = 0
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale="ja-JP",
+            )
+            page = context.new_page()
+            for code in targets:
+                url = f"https://kabutan.jp/stock/news?code={code}"
+                try:
+                    page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                    # Bot対策チャレンジは数秒でJS判定→自動リダイレクトされることが
+                    # 多いため、実ニュース一覧が出るまで少し待つ(出なければそのまま
+                    # 現状のHTMLを解析=チャレンジ未突破なら0件として扱われる)。
+                    try:
+                        page.wait_for_selector(".s_news_list", timeout=8000)
+                    except Exception:
+                        pass
+                    html = page.content()
+                    items = _parse_kabutan_html(html, 10)
+                    if not items and not _kabutan_logged_error:
+                        _kabutan_logged_error = True
+                        print(f"    [kabutan] DIAG playwright empty: code={code} "
+                              f"title={page.title()!r} len={len(html)}", flush=True)
+                except Exception as e:
+                    items = []
+                    if not _kabutan_logged_error:
+                        _kabutan_logged_error = True
+                        print(f"    [kabutan] DIAG playwright exception: code={code} "
+                              f"{type(e).__name__}: {str(e)[:200]}", flush=True)
+                if items:
+                    by_code[code] = items
+                done += 1
+                if done % 50 == 0:
+                    print(f"    [kabutan] {done}/{len(targets)} done, {len(by_code)} with news", flush=True)
+                time.sleep(pause)
+        finally:
+            browser.close()
+    return by_code
 
 
 def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
