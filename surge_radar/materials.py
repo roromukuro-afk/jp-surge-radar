@@ -597,6 +597,11 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
         if r.status_code != 200:
+            global _kabutan_logged_error
+            if not _kabutan_logged_error:
+                _kabutan_logged_error = True
+                print(f"    [kabutan] DIAG non-200: code={code} status={r.status_code} "
+                      f"len={len(r.text)} body_head={r.text[:200]!r}", flush=True)
             return []
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
@@ -641,8 +646,16 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
                 "source": "kabutan",
             })
         return out
-    except Exception:
+    except Exception as e:
+        global _kabutan_logged_error
+        if not _kabutan_logged_error:
+            _kabutan_logged_error = True
+            print(f"    [kabutan] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
         return []
+
+
+_kabutan_logged_error = False
+_minkabu_logged_error = False
 
 
 def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dict]:
@@ -668,6 +681,11 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
         if r.status_code != 200:
+            global _minkabu_logged_error
+            if not _minkabu_logged_error:
+                _minkabu_logged_error = True
+                print(f"    [minkabu] DIAG non-200: code={code} status={r.status_code} "
+                      f"len={len(r.text)} body_head={r.text[:200]!r}", flush=True)
             return []
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
@@ -708,7 +726,11 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
                 "source": f"minkabu({orig_source})" if orig_source != "minkabu" else "minkabu",
             })
         return out
-    except Exception:
+    except Exception as e:
+        global _minkabu_logged_error
+        if not _minkabu_logged_error:
+            _minkabu_logged_error = True
+            print(f"    [minkabu] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
         return []
 
 
