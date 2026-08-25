@@ -259,11 +259,12 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
 
     predict_store=False のとき predict は保存せず本番予測を壊さない (スモーク用)。
     """
-    db.init_db()
     asof = datetime.now().strftime("%Y-%m-%d")
     summary: dict = {"asof": asof}
-    pipeline_jid = _log_start("daily_pipeline")
+    pipeline_jid = None
     try:
+        db.init_db()
+        pipeline_jid = _log_start("daily_pipeline")
         # --- CRITICAL steps: failure aborts pipeline ---
         if update_universe:
             step_critical("universe", update_universe_step)
@@ -348,14 +349,27 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
             step("push_notify", push_notify.notify_pipeline_result, summary, asof)
     except Exception as e:  # noqa: BLE001
         tb = traceback.format_exc()
-        _log_end(pipeline_jid, "error", message=tb)
+        # _log_end自体がDB書き込みなので、DB接続断(Neonクォータ超過等)が原因の
+        # 障害だとここでも例外が起き、以下の通知が実行されないまま失敗していた
+        # (2026-08-24, 本番500エラーに気づくのが遅れた反省点)。ログ記録の失敗が
+        # 通知をブロックしないよう分離する。
+        if pipeline_jid is not None:
+            try:
+                _log_end(pipeline_jid, "error", message=tb)
+            except Exception:
+                pass
         print(f"[{datetime.now():%H:%M:%S}] pipeline FAILED: {e}", flush=True)
+        err_text = str(e)
+        # データ転送/ストレージクォータ超過は原因が一目で分かるよう強調する
+        if "quota" in err_text.lower() or "exceeded" in err_text.lower():
+            title = "急騰レーダー: DBクォータ超過の疑い"
+            body = f"{asof}: DB接続失敗(クォータ超過の可能性) - {err_text[:100]}"
+        else:
+            title = "急騰レーダー パイプライン失敗"
+            body = f"{asof}: {err_text[:120]}"
         if push_notify.is_configured():
             try:
-                push_notify.send_all(
-                    title="急騰レーダー パイプライン失敗",
-                    body=f"{asof}: {str(e)[:120]}",
-                    url="/logs", tag="pipeline-error")
+                push_notify.send_all(title=title, body=body, url="/logs", tag="pipeline-error")
             except Exception:
                 pass
         raise
