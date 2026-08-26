@@ -406,16 +406,32 @@ def _quality(r: dict) -> float:
 
 
 def _days_old(row_date: str | None, asof: str) -> int | None:
+    """材料の発表日からasofまでの営業日ベースの経過日数(土日を除く簡易版、祝日は未考慮)。
+
+    2026-08-25: 単純な暦日差だと、金曜発表の材料は月曜時点で暦上3日経過扱いになり
+    不当に減衰してしまう(市場が休みの週末は実質「情報が古くなる」時間ではない)。
+    土日を飛ばして数えることで、金曜の材料が月曜も実質1営業日前として扱われるようにする。
+    """
     if not row_date:
         return None
     try:
-        return (datetime.strptime(asof, "%Y-%m-%d") - datetime.strptime(row_date, "%Y-%m-%d")).days
+        d0 = datetime.strptime(row_date, "%Y-%m-%d").date()
+        d1 = datetime.strptime(asof, "%Y-%m-%d").date()
     except Exception:
         return None
+    if d1 <= d0:
+        return 0
+    days = 0
+    cur = d0
+    while cur < d1:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:  # Mon-Fri のみカウント
+            days += 1
+    return days
 
 
-def _recency_decay(days_old: int | None, half_life_days: float = 4.0) -> float:
-    """材料の鮮度減衰。half_life_days経過するごとにスコアを半分にする。
+def _recency_decay(days_old: int | None, half_life_days: float = 1.5) -> float:
+    """材料の鮮度減衰。half_life_days(営業日)経過するごとにスコアを半分にする。
 
     2026-08-25判明: 過去の判定済み予測を「材料の発表からの経過日数」で分けると、
     発表0〜1日以内の新鮮な材料を持つ予測は成功率8.2%だったのに対し、2日以上
@@ -423,8 +439,12 @@ def _recency_decay(days_old: int | None, half_life_days: float = 4.0) -> float:
     古い材料で、うち27%は11〜25日前)。従来はpos_impact/material_qualityとも
     lookback期間(25日)内で最もインパクトの高い材料を無条件採用しており、
     3週間前の大型開示が居座り続けて「材料あり」上位に古い・既に織り込み済みの
-    銘柄を拾ってしまっていた。経過日数に応じて指数減衰させることで、同程度の
-    インパクトなら新しい材料を優先する。half_life=4日は経験的な初期値。
+    銘柄を拾ってしまっていた。経過日数(営業日)に応じて指数減衰させることで、
+    同程度のインパクトなら新しい材料を優先する。
+    half_life=1.5営業日(2026-08-25、当日〜翌営業日の情報をより強く優先すべき
+    というユーザー指摘を反映して初期値4日から短縮): 当日=1.0, 1営業日前=0.63,
+    2営業日前=0.40, 5営業日前=0.10 と、当日〜翌営業日を明確に優遇しつつ
+    ゼロにはしない。
     """
     if days_old is None or days_old < 0:
         return 1.0
