@@ -315,6 +315,34 @@ def _is_generic_market_digest(title: str) -> bool:
     return any(p in title for p in _GENERIC_DIGEST_TITLE_PATTERNS)
 
 
+# 「【決算速報】{会社名}、...」形式のタイトルは、Yahoo!JPの個別銘柄ページに
+# "他社"の決算速報が関連コンテンツとして混在表示されることがあり、無条件保存
+# すると無関係企業の材料が紐付いてしまう(2026-08-26判明: 3070ジェリービーンズ
+# グループに無関係なJ-REIT「ハウスリート」の決算速報が、3315日本コークス工業に
+# 「ＧＬＰ」の決算速報が、5580プロディライトに「ホテルリート」の決算速報が、
+# それぞれ紐付いていた)。会社名部分が対象銘柄の登録名と重ならない場合は除外する。
+_COMPANY_FLASH_PREFIXES = ("【決算速報】",)
+
+
+def _title_company_mismatch(title: str, own_name: str) -> bool:
+    if not own_name:
+        return False
+    for prefix in _COMPANY_FLASH_PREFIXES:
+        if not title.startswith(prefix):
+            continue
+        rest = title[len(prefix):]
+        name_snippet = rest.split("、", 1)[0].split(",", 1)[0].strip()
+        if not name_snippet:
+            return False
+        own_stub = own_name[:4]
+        if own_stub and own_stub in name_snippet:
+            return False
+        if name_snippet[:4] and name_snippet[:4] in own_name:
+            return False
+        return True
+    return False
+
+
 def store_materials(code: str, items: list[dict]) -> int:
     """
     重複チェック+INSERTを項目ごとに逐次DB往復していたのを、コード単位で
@@ -323,13 +351,26 @@ def store_materials(code: str, items: list[dict]) -> int:
     全銘柄フルスキャンの実行時間を大きく圧迫していた
     (item数 x 2往復 → 1往復のSELECT + 1回のバルクINSERTに削減)。
 
-    市場全体のランキング・市況ダイジェスト記事(_is_generic_market_digest)は
-    個別銘柄の材料として意味がないため、ここで除外してから処理する
-    (2026-08-25追加)。
+    市場全体のランキング・市況ダイジェスト記事(_is_generic_market_digest)や
+    他社の決算速報の誤紐付け(_title_company_mismatch)は個別銘柄の材料として
+    意味がない/誤りなので、ここで除外してから処理する
+    (2026-08-25/26追加)。
     """
     if not items:
         return 0
     items = [it for it in items if not _is_generic_market_digest(it.get("title", ""))]
+    if not items:
+        return 0
+
+    own_name = ""
+    try:
+        with db.cursor() as conn0:
+            r = conn0.execute("SELECT name FROM securities WHERE code=%s", (code,)).fetchone()
+            own_name = (r["name"] if r else "") or ""
+    except Exception:
+        pass
+    if own_name:
+        items = [it for it in items if not _title_company_mismatch(it.get("title", ""), own_name)]
     if not items:
         return 0
     from . import materials_analysis as ma
