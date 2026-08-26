@@ -97,7 +97,16 @@ def fundamental_score(f: dict) -> float:
 def exclusion_gates(f: dict) -> list[str]:
     """除外/重大減点ゲート。該当タグを返す(空なら問題なし)。"""
     gates = []
-    if not f.get("liquidity_ok", 0) and f.get("turnover_log", 0) < 7.0:
+    if not f.get("liquidity_ok", 0):
+        # 2026-08-26判明: 従来は `turnover_log < 7.0`(約1000万円/日)も同時に
+        # 満たさないと除外されなかったが、liquidity_ok自体はMIN_AVG_TURNOVER
+        # (3000万円/日)基準で判定している。1000万〜3000万円/日の銘柄は
+        # liquidity_ok=0(不合格)なのにturnover_log>=7.0のためこのANDを
+        # すり抜け、A/B候補として通過し続けていた(3121で実例確認: 8/21・
+        # 8/26と2回A判定されたが、8/21分は判定フェーズでliquidity_failとして
+        # failし、学習ログ自体が「流動性ゲートを厳格化」と記録していた=
+        # 判定時と予測時で実質異なる基準を使っていた不整合)。liquidity_ok
+        # 単体で判定するよう単純化し、判定時と予測時の基準を一致させる。
         gates.append("liquidity_fail")              # 流動性不足
     if f.get("popularity_loss", 0):
         gates.append("popularity_loss")             # 人気離散(出来高減+価格下落)
