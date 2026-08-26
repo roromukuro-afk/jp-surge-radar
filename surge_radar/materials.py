@@ -405,6 +405,32 @@ def _quality(r: dict) -> float:
     return max(0.0, min(q, 1.0))
 
 
+def _days_old(row_date: str | None, asof: str) -> int | None:
+    if not row_date:
+        return None
+    try:
+        return (datetime.strptime(asof, "%Y-%m-%d") - datetime.strptime(row_date, "%Y-%m-%d")).days
+    except Exception:
+        return None
+
+
+def _recency_decay(days_old: int | None, half_life_days: float = 4.0) -> float:
+    """材料の鮮度減衰。half_life_days経過するごとにスコアを半分にする。
+
+    2026-08-25判明: 過去の判定済み予測を「材料の発表からの経過日数」で分けると、
+    発表0〜1日以内の新鮮な材料を持つ予測は成功率8.2%だったのに対し、2日以上
+    経過した材料は3.6%と半分以下だった(全体911件の79%が実は2日以上経過した
+    古い材料で、うち27%は11〜25日前)。従来はpos_impact/material_qualityとも
+    lookback期間(25日)内で最もインパクトの高い材料を無条件採用しており、
+    3週間前の大型開示が居座り続けて「材料あり」上位に古い・既に織り込み済みの
+    銘柄を拾ってしまっていた。経過日数に応じて指数減衰させることで、同程度の
+    インパクトなら新しい材料を優先する。half_life=4日は経験的な初期値。
+    """
+    if days_old is None or days_old < 0:
+        return 1.0
+    return 0.5 ** (days_old / half_life_days)
+
+
 def score_material_rows(rows: list[dict], asof: str) -> dict:
     """既に取得済みの材料行リストからスコアを計算 (単一/バルク共通)。
 
@@ -422,13 +448,11 @@ def score_material_rows(rows: list[dict], asof: str) -> dict:
 
     pos = [r for r in rows if (r["sentiment"] or 0) > 0]
     neg = [r for r in rows if (r["sentiment"] or 0) < 0]
-    pos_impact = max((r["impact"] or 0) * (r["persistence"] or 0.5) for r in pos) if pos else 0.0
-    neg_impact = max((r["impact"] or 0) for r in neg) if neg else 0.0
+    pos_impact = max(((r["impact"] or 0) * (r["persistence"] or 0.5)
+                      * _recency_decay(_days_old(r["date"], asof)) for r in pos), default=0.0)
+    neg_impact = max(((r["impact"] or 0) * _recency_decay(_days_old(r["date"], asof)) for r in neg), default=0.0)
     last_date = rows[0]["date"]
-    try:
-        last_days = (datetime.strptime(asof, "%Y-%m-%d") - datetime.strptime(last_date, "%Y-%m-%d")).days
-    except Exception:
-        last_days = None
+    last_days = _days_old(last_date, asof)
     # 鮮度ウェイト: T0/T-1 で出た材料を重視
     fresh = 1 if (last_days is not None and last_days <= 3) else 0
     material_raw = max(0.0, pos_impact - 0.5 * neg_impact)
@@ -436,10 +460,10 @@ def score_material_rows(rows: list[dict], asof: str) -> dict:
                        for c in ["新株予約権", "第三者割当", "公募増資", "ワラント", "希薄化"]))
     going_concern = int(any("継続企業" in (r["category"] or "") for r in rows))
 
-    # 質スコア: 最良の好材料を採用 (接続度×未織込×反応 ベース)
+    # 質スコア: 最良の好材料を採用 (接続度×未織込×反応 ベース、鮮度減衰込み)
     pool = pos or rows
-    best = max(pool, key=_quality)
-    material_quality = round(_quality(best), 3)
+    best = max(pool, key=lambda r: _quality(r) * _recency_decay(_days_old(r["date"], asof)))
+    material_quality = round(_quality(best) * _recency_decay(_days_old(best["date"], asof)), 3)
 
     # 上位材料タイトル(理由表示用)
     top_row = pos[0] if pos else rows[0]
