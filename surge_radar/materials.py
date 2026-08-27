@@ -378,7 +378,7 @@ def _title_company_mismatch(title: str, own_name: str) -> bool:
     return not (own_stub and own_stub in title)
 
 
-def store_materials(code: str, items: list[dict]) -> int:
+def store_materials(code: str, items: list[dict], own_name: str | None = None) -> int:
     """
     重複チェック+INSERTを項目ごとに逐次DB往復していたのを、コード単位で
     まとめて処理するよう変更 (2026-08-22)。大型銘柄は見出しが数十件になる
@@ -390,6 +390,13 @@ def store_materials(code: str, items: list[dict]) -> int:
     他社の決算速報の誤紐付け(_title_company_mismatch)は個別銘柄の材料として
     意味がない/誤りなので、ここで除外してから処理する
     (2026-08-25/26追加)。
+
+    own_name を渡さない場合は1件ずつ SELECT する(2026-08-25の実装のまま、
+    低頻度呼び出し向け)。enrich_top_codes のように数十〜百銘柄を連続で
+    処理する場合は呼び出し側で securities を一括取得し own_name を渡すこと
+    (2026-08-27: 個別 SELECT を100銘柄超で連続実行した際に接続がまれに
+    失敗し own_name="" にフォールバックして誤紐付けフィルタが素通りする
+    事例を確認したため)。
     """
     if not items:
         return 0
@@ -397,13 +404,14 @@ def store_materials(code: str, items: list[dict]) -> int:
     if not items:
         return 0
 
-    own_name = ""
-    try:
-        with db.cursor() as conn0:
-            r = conn0.execute("SELECT name FROM securities WHERE code=%s", (code,)).fetchone()
-            own_name = (r["name"] if r else "") or ""
-    except Exception:
-        pass
+    if own_name is None:
+        own_name = ""
+        try:
+            with db.cursor() as conn0:
+                r = conn0.execute("SELECT name FROM securities WHERE code=%s", (code,)).fetchone()
+                own_name = (r["name"] if r else "") or ""
+        except Exception:
+            pass
     if own_name:
         items = [it for it in items if not _title_company_mismatch(it.get("title", ""), own_name)]
     if not items:
@@ -1119,10 +1127,19 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
                 print(f"    [enrich:{name}] error (non-fatal): {e}", flush=True)
                 results[name] = {}
 
+    # own_name を銘柄ごとに個別SELECTすると数十〜百銘柄の連続呼び出しで接続が
+    # まれに失敗し誤紐付けフィルタが素通りする(2026-08-27判明)。ここで一括取得
+    # してから store_materials に渡す。
+    with db.cursor() as conn0:
+        ph = ",".join(["%s"] * len(targets))
+        name_rows = conn0.execute(
+            f"SELECT code, name FROM securities WHERE code IN ({ph})", tuple(targets)).fetchall()
+    name_map = {r["code"]: r["name"] or "" for r in name_rows}
+
     # store_materials は DB 書き込みなので並行実行後にメインスレッドでまとめて行う
     for by_code in results.values():
         for code, items in by_code.items():
-            n = store_materials(code, items)
+            n = store_materials(code, items, own_name=name_map.get(code, ""))
             stored += n
 
     return {"enriched_codes": len(targets), "materials_added": stored,
