@@ -315,32 +315,28 @@ def _is_generic_market_digest(title: str) -> bool:
     return any(p in title for p in _GENERIC_DIGEST_TITLE_PATTERNS)
 
 
-# 「【決算速報】{会社名}、...」形式のタイトルは、Yahoo!JPの個別銘柄ページに
-# "他社"の決算速報が関連コンテンツとして混在表示されることがあり、無条件保存
-# すると無関係企業の材料が紐付いてしまう(2026-08-26判明: 3070ジェリービーンズ
-# グループに無関係なJ-REIT「ハウスリート」の決算速報が、3315日本コークス工業に
-# 「ＧＬＰ」の決算速報が、5580プロディライトに「ホテルリート」の決算速報が、
-# それぞれ紐付いていた)。会社名部分が対象銘柄の登録名と重ならない場合は除外する。
-_COMPANY_FLASH_PREFIXES = ("【決算速報】",)
+# 「【決算速報】{会社名}、...」「＜レーティング変更観測＞新規・{会社名}格上げ…」
+# 「【アナリスト評価】{会社名}、…」のような複数銘柄まとめ枠のタイトルは、
+# Yahoo!JPの個別銘柄ページに"他社"分が関連コンテンツとして混在表示されることが
+# あり、無条件保存すると無関係企業の材料が紐付いてしまう(2026-08-26判明:
+# 3070ジェリービーンズグループに無関係なJ-REIT「ハウスリート」の決算速報、
+# 3315日本コークス工業に「ＧＬＰ」の決算速報、5580プロディライトに「ホテル
+# リート」の決算速報、4689LINEヤフーに「弁護士コム／明治ＨＤ」のレーティング
+# 変更観測・「リクルートＨ」のアナリスト評価、がそれぞれ紐付いていた)。
+# 個別テンプレートごとに会社名部分を厳密抽出するのは壊れやすいため、これらの
+# 枠マーカーを含み、かつ対象銘柄の登録名がタイトル中に一切登場しない場合は
+# 一律で他社記事の誤紐付けとみなして除外する(2026-08-26、_title_company_mismatch
+# から汎用化)。
+_DIGEST_MARKER_PATTERNS = ("【決算速報】", "＜レーティング変更観測＞", "【アナリスト評価】")
 
 
 def _title_company_mismatch(title: str, own_name: str) -> bool:
-    if not own_name:
+    if not own_name or not title:
         return False
-    for prefix in _COMPANY_FLASH_PREFIXES:
-        if not title.startswith(prefix):
-            continue
-        rest = title[len(prefix):]
-        name_snippet = rest.split("、", 1)[0].split(",", 1)[0].strip()
-        if not name_snippet:
-            return False
-        own_stub = own_name[:4]
-        if own_stub and own_stub in name_snippet:
-            return False
-        if name_snippet[:4] and name_snippet[:4] in own_name:
-            return False
-        return True
-    return False
+    if not any(p in title for p in _DIGEST_MARKER_PATTERNS):
+        return False
+    own_stub = own_name[:4]
+    return not (own_stub and own_stub in title)
 
 
 def store_materials(code: str, items: list[dict]) -> int:
