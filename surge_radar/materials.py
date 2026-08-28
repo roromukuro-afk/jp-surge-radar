@@ -76,6 +76,14 @@ CATEGORY_KEYWORDS: dict[str, tuple[float, float, int]] = {
     "業績下振れ": (0.7, 0.6, -1),
 }
 
+# 事故/事件系の語。「受注」「提携」等の好材料キーワードが本文中に偶発的に
+# 含まれていても(例:「工事受注会社」=事故を起こした施工業者、を指す用法)、
+# 好材料として扱わないための除外リスト(2026-08-28追加)。
+_INCIDENT_OVERRIDE_KEYWORDS = (
+    "転落事故", "死亡事故", "業務上過失致死", "家宅捜索", "逮捕", "起訴", "送検",
+    "労災", "死傷", "遺体", "不祥事", "検察", "書類送検",
+)
+
 # テーマ語彙 (マクロ/業界)。テーマ地合いと併用。
 THEME_KEYWORDS = {
     "半導体": ["半導体", "ウエハ", "後工程", "前工程", "ファウンドリ", "SoC", "メモリ"],
@@ -100,6 +108,15 @@ def classify_material(title: str, body: str = "") -> dict:
         if kw in text:
             hits.append((kw, imp, per, direction))
     themes = [t for t, kws in THEME_KEYWORDS.items() if any(k in text for k in kws)]
+
+    # 2026-08-28判明: 1433(ベステラ)の「川崎転落事故、工事受注会社の支店を
+    # 家宅捜索　業務上過失致死容疑」が、本文中の「工事受注会社」の「受注」に
+    # 単純キーワードマッチして sentiment=+0.75/impact=0.8 の好材料【受注】に
+    # 誤分類されていた(死亡事故・家宅捜索という強いネガティブ文脈を一切見ていない
+    # ため)。事故/事件系の語が含まれる場合は、偶発的に一致した好材料方向の
+    # キーワードを無視する。
+    if any(k in text for k in _INCIDENT_OVERRIDE_KEYWORDS):
+        hits = [h for h in hits if h[3] < 0]
 
     if not hits:
         return {"category": "", "impact": 0.0, "persistence": 0.0,
