@@ -406,6 +406,16 @@ _DIGEST_MARKER_PATTERNS = ("【決算速報】", "＜レーティング変更観
 def _title_company_mismatch(title: str, own_name: str) -> bool:
     if not own_name or not title:
         return False
+    # 「○○GHD」「○○ＧＨＤ」は特定の持株会社を指す固有の略称。グループ内の
+    # 別法人(同じ「○○」プレフィックスを持つ子会社・関連会社)は2文字スタブ
+    # 一致で誤って生き残ってしまうため、自社名自体に持株会社シグナルが無い
+    # 場合は別会社の記事とみなす(2026-09-01判明: 9041近鉄グループホール
+    # ディングスの「近鉄GHDが個人向け銀行サービス」が8244近鉄百貨店/
+    # 2978ツクルバ/9006京浜急行電鉄など無関係な複数銘柄に紐付いていた。
+    # 同種にセンコーGHD→9904ベリテ等、計46件確認)。
+    if any(m in title for m in ("GHD", "ＧＨＤ")) and not any(
+            m in own_name for m in ("ホールディングス", "ＨＤ", "ＧＨＤ")):
+        return True
     if not any(p in title for p in _DIGEST_MARKER_PATTERNS):
         return False
     # 2026-08-27: 4文字スタブだと「カシオ計算機」の自社材料「カシオの株価、
