@@ -1131,7 +1131,8 @@ def fetch_tdnet_per_code(codes: list[str], days: int = 30, pause: float = 0.5,
     return by_code
 
 
-def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
+def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100,
+                     include_blocked_sources: bool = False) -> dict:
     """
     上位予測銘柄コードについて、Yahoo!JP/日経ニュースで材料を補完する。
     daily pipeline の predict 後(および predict 内の momentum pool 事前取得)に
@@ -1146,11 +1147,11 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
     ブロックされ続ける)。ローカルPCからは正常に取得できるため、リポジトリの
     コードにバグがあるわけではなくクラウドIPのレピュテーション判定が原因と
     確認済み。技術的に自動化での突破が現実的でないため、この2ソースは
-    enrich_top_codes からは呼ばない(fetch_kabutan_news/fetch_minkabu_news
-    自体は関数として残してあり、ローカルでの単発確認や将来の自己ホスト
-    ランナー運用では引き続き使える)。
+    include_blocked_sources=True を明示した場合のみ追加する
+    (2026-09-02: ローカル専用の scripts/materials_local_extra.py から使用。
+    GitHub Actions からは常に False のまま呼ぶこと)。
 
-    2ソースは別ホストなのでスレッドで並行実行し(サイト間の並列化)、
+    ソースはそれぞれ別ホストなのでスレッドで並行実行し(サイト間の並列化)、
     かつサイト内でも同一サイトへ最大3並列でリクエストする(サイト内の
     軽度並列化、_fetch_batch_concurrent参照)。
     """
@@ -1165,6 +1166,9 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
         "yahoojp": lambda: fetch_yahoo_jp_batch(targets, max_codes=max_codes),
         "nikkei": lambda: fetch_nikkei_batch(targets, max_codes=max_codes),
     }
+    if include_blocked_sources:
+        fetchers["kabutan"] = lambda: fetch_kabutan_batch(targets, max_codes=max_codes)
+        fetchers["minkabu"] = lambda: fetch_minkabu_batch(targets, max_codes=max_codes)
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=len(fetchers)) as ex:
         futures = {name: ex.submit(fn) for name, fn in fetchers.items()}
@@ -1192,7 +1196,9 @@ def enrich_top_codes(codes: list[str], asof: str, max_codes: int = 100) -> dict:
 
     return {"enriched_codes": len(targets), "materials_added": stored,
             "yahoojp_codes": len(results.get("yahoojp", {})),
-            "nikkei_codes": len(results.get("nikkei", {}))}
+            "nikkei_codes": len(results.get("nikkei", {})),
+            "kabutan_codes": len(results.get("kabutan", {})),
+            "minkabu_codes": len(results.get("minkabu", {}))}
 
 
 def analyze_with_llm(code: str, materials_text: str) -> dict | None:
