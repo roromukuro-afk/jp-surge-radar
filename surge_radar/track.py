@@ -105,11 +105,10 @@ def track_all(asof: str | None = None) -> dict:
              material_continued, volume_continued, result, db.j(fail_tags), "", next_learning))
         updated += 1
 
-        # 20営業日追跡完了 or 既に+20%到達 → 確定
+        # 20営業日追跡完了 or 既に+20%到達 → 確定 (status='judged' 表示用)
         finalize = (oc["bars_tracked"] >= JUDGE_WINDOW) or (oc["days_to_20pct"] is not None)
         if finalize:
             label = labeling.is_success(oc)
-            teacher_args.append((p, feats, label, fail_tags, result))
             finalized_ids.append(p["id"])
             judged += 1
             if label:
@@ -120,6 +119,19 @@ def track_all(asof: str | None = None) -> dict:
                 live_fail += 1
                 if result == "danger_fail":
                     danger_fail += 1
+
+        # 教師データ追加は20営業日フル満了時のみ (2026-09-07判明: 早期成功だけ
+        # finalize条件でここまで到達すると、直近1か月弱のteacher_samplesが
+        # 「成功例ばかり」に偏る。同じ日の失敗例はbars_tracked>=20に達する
+        # 数週間後まで教師データに入らないため、track_all を毎日呼ぶたびに
+        # 直近日付ほど label=1 に極端に偏ったサンプルで再学習していた
+        # (実例: t0_date=2026-08-10〜09-04の教師データはlabel=0がほぼ0件、
+        # label=1のみ計300件超)。成功/失敗を同じ成熟条件で捉えないと
+        # クラス比率が歪むため、教師データ追加はbars_tracked>=JUDGE_WINDOW
+        # のみに限定する(早期成功の status='judged' 表示自体は変えない)。
+        if oc["bars_tracked"] >= JUDGE_WINDOW:
+            label = labeling.is_success(oc)
+            teacher_args.append((p, feats, label, fail_tags, result))
 
     # まとめて書き込み
     if outcome_rows:
