@@ -51,11 +51,12 @@ def current_version() -> str | None:
         v = CURRENT_MODEL_VERSION_FILE.read_text().strip()
         if v:
             return v
-    # クラウドモード: ファイルがなければ DB から最新バージョンを取得
+    # クラウドモード: ファイルがなければ DB から最新の昇格済みバージョンを取得
+    # (退行ガード: promoted=FALSE の再学習は current にしない)
     try:
         with db.cursor() as conn:
             r = conn.execute(
-                "SELECT version FROM model_meta ORDER BY trained_at DESC LIMIT 1"
+                "SELECT version FROM model_meta WHERE promoted ORDER BY trained_at DESC LIMIT 1"
             ).fetchone()
         return r["version"] if r else None
     except Exception:
@@ -181,6 +182,16 @@ def sample_weights(src: list[str], bars_tracked: np.ndarray | None = None) -> np
     → live_success は bars_tracked>=MATURE_BARS の"満期"のものだけ重み付け対象。
       未成熟の live_success は historical と同じ重み1.0 (満期になれば自動的に
       重み付け対象になる)。live_fail は常に対象 (常に成熟しているため)。
+
+    2026-09-07追記: track.py 側でも teacher_samples への追加自体を
+    bars_tracked>=JUDGE_WINDOW(20、MATURE_BARSの18より厳しい)に限定する
+    よう修正した(早期成功だけが先に教師データ化され、直近1か月弱の
+    live_success/live_failのクラス比率がlabel=1に極端に偏っていた実害を
+    確認したため)。そのためteacher_samplesに現れるlive_success/live_failは
+    今後すべてbars_tracked>=20(=MATURE_BARS以上)であり、ここでのmatureは
+    実質常にTrueになる。track.py側の変更を前提にこの関数の判定を削るのは
+    リスクなので、二重防御としてそのまま残す(将来teacher_samplesへの別の
+    追加経路ができた場合の安全弁)。
     """
     from . import learning
     n = len(src)
@@ -323,20 +334,40 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
               "danger_nn": danger_nn, "neg_danger": neg_danger,
               "feature_keys": FEATURE_KEYS, "sim_thresholds": sim_thresholds}
 
+    metrics = {"cv_auc": round(auc, 4) if auc == auc else None,
+               "train_auc": round(train_auc, 4)}
+
+    # 退行ガード: 直前の"昇格済み"モデルの cv_auc と比較し、REGRESSION_TOLERANCE
+    # を超えて悪化する場合は current にしない (2026-09-07追加。それまでは毎日の
+    # 再学習を無条件に本番反映しており、教師データの一時的な偏りやノイズで
+    # モデルが退行しても検知できなかった)。4-fold CVのAUC自体にブレがあるため、
+    # 僅かな悪化は許容(トレランス以内なら昇格・様子見)。前回値やcv_aucが
+    # 欠測(NaN)の場合は比較不能として無条件昇格する。
+    REGRESSION_TOLERANCE = 0.02
+    prev_auc = None
+    with db.cursor() as conn0:
+        prev_row = conn0.execute(
+            "SELECT metrics FROM model_meta WHERE promoted ORDER BY trained_at DESC LIMIT 1"
+        ).fetchone()
+    if prev_row and prev_row.get("metrics"):
+        prev_metrics = db.loadj(prev_row["metrics"], {})
+        prev_auc = prev_metrics.get("cv_auc")
+    new_auc = metrics.get("cv_auc")
+    promote = (prev_auc is None or new_auc is None
+              or new_auc >= prev_auc - REGRESSION_TOLERANCE)
+
     # ローカルファイルに保存 (クラウドでも一時的に必要)
     bundle_path = _bundle_path(version)
     dump(bundle, bundle_path)
-    CURRENT_MODEL_VERSION_FILE.write_text(version)
-
-    metrics = {"cv_auc": round(auc, 4) if auc == auc else None,
-               "train_auc": round(train_auc, 4)}
+    if promote:
+        CURRENT_MODEL_VERSION_FILE.write_text(version)
 
     # model_meta に記録 (PostgreSQL: UPSERT / SQLite: INSERT OR REPLACE)
     with db.cursor() as conn:
         if DATABASE_URL:
             conn.execute(
-                """INSERT INTO model_meta(version,trained_at,n_samples,n_pos,n_neg,metrics,feature_importance,notes)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                """INSERT INTO model_meta(version,trained_at,n_samples,n_pos,n_neg,metrics,feature_importance,notes,promoted)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (version) DO UPDATE SET
                      trained_at=EXCLUDED.trained_at,
                      n_samples=EXCLUDED.n_samples,
@@ -344,22 +375,24 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
                      n_neg=EXCLUDED.n_neg,
                      metrics=EXCLUDED.metrics,
                      feature_importance=EXCLUDED.feature_importance,
-                     notes=EXCLUDED.notes""",
+                     notes=EXCLUDED.notes,
+                     promoted=EXCLUDED.promoted""",
                 (version, datetime.now().isoformat(timespec="seconds"), len(X), n_pos, n_neg,
-                 json.dumps(metrics), json.dumps(importance, ensure_ascii=False), notes),
+                 json.dumps(metrics), json.dumps(importance, ensure_ascii=False), notes, promote),
             )
         else:
             conn.execute(
                 "INSERT OR REPLACE INTO model_meta"
-                "(version,trained_at,n_samples,n_pos,n_neg,metrics,feature_importance,notes)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                "(version,trained_at,n_samples,n_pos,n_neg,metrics,feature_importance,notes,promoted)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (version, datetime.now().isoformat(timespec="seconds"), len(X), n_pos, n_neg,
-                 json.dumps(metrics), json.dumps(importance, ensure_ascii=False), notes),
+                 json.dumps(metrics), json.dumps(importance, ensure_ascii=False), notes, promote),
             )
 
-    # クラウドモード: モデルデータを DB に保存
+    # クラウドモード: モデルデータを DB に保存 (昇格した場合のみ本体を残す。
+    # 退行のため見送ったモデルはメタ情報だけ記録し、重いBYTEA本体は保存しない)
     prune_result = {}
-    if DATABASE_URL:
+    if DATABASE_URL and promote:
         _save_model_to_db(version, bundle_path)
         # 古いバージョンの重いBYTEA本体を自動整理 (Storageクォータの肥大化防止)
         try:
@@ -369,6 +402,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
 
     return {"trained": True, "version": version, "n_samples": len(X),
             "n_pos": n_pos, "n_neg": n_neg, **metrics,
+            "promoted": promote, "prev_auc": prev_auc,
             "top_features": list(importance.items())[:10], **result_extra,
             "pruned_old_blobs": prune_result}
 
