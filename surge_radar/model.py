@@ -338,12 +338,20 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
                "train_auc": round(train_auc, 4)}
 
     # 退行ガード: 直前の"昇格済み"モデルの cv_auc と比較し、REGRESSION_TOLERANCE
-    # を超えて悪化する場合は current にしない (2026-09-07追加。それまでは毎日の
-    # 再学習を無条件に本番反映しており、教師データの一時的な偏りやノイズで
-    # モデルが退行しても検知できなかった)。4-fold CVのAUC自体にブレがあるため、
-    # 僅かな悪化は許容(トレランス以内なら昇格・様子見)。前回値やcv_aucが
-    # 欠測(NaN)の場合は比較不能として無条件昇格する。
-    REGRESSION_TOLERANCE = 0.02
+    # を超えて悪化する場合は current にしない (2026-09-07追加)。
+    #
+    # 2026-09-10判明・検討: 「直近ウィンドウ内の最良値」と比較する案を一時実装
+    # したが、これは9/1以降 live_fail(本物の失敗例)が教師データに混ざり
+    # 始めてから cv_auc が 0.768→0.7417 まで10回連続で下落している状況で
+    # 使うと、以後ずっと再学習をブロックし続ける「ラチェット」になってしまう
+    # (ピークを二度と超えられない)。この下落は、historical_neg(綺麗な過去
+    # データ)だけで学習していた頃より、本物の失敗例が混ざって"問題そのものが
+    # 難しくなった"ことによる可能性が高く(実成功率が78%→23%へ収束したのと
+    # 同じ現象)、単純にモデルが劣化したとは言い切れない。学習を止めることは
+    # 最新の実戦データを無視することになり本末転倒のため、直前1件との比較
+    # (ゆるやかな適応を許す)に戻した。本当に見るべきは cv_auc という内部
+    # 代理指標ではなく実際の的中率(A/B/C/D判定の20営業日満了後の成功率)
+    # なので、そちらは queries.py 等の分析側で別途継続監視する。
     prev_auc = None
     with db.cursor() as conn0:
         prev_row = conn0.execute(
@@ -353,6 +361,7 @@ def train(notes: str = "", dry_run: bool = False) -> dict:
         prev_metrics = db.loadj(prev_row["metrics"], {})
         prev_auc = prev_metrics.get("cv_auc")
     new_auc = metrics.get("cv_auc")
+    REGRESSION_TOLERANCE = 0.02
     promote = (prev_auc is None or new_auc is None
               or new_auc >= prev_auc - REGRESSION_TOLERANCE)
 
