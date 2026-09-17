@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS materials (
     unpriced    REAL,
     connect     REAL,
     raw         TEXT,
+    excluded    BOOLEAN DEFAULT FALSE,
+    exclude_reason TEXT,
     created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_materials_code_date ON materials(code, date);
@@ -282,6 +284,8 @@ CREATE TABLE IF NOT EXISTS materials (
     unpriced    REAL,
     connect     REAL,
     raw         TEXT,
+    excluded    BOOLEAN DEFAULT 0,
+    exclude_reason TEXT,
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_materials_code_date ON materials(code, date);
@@ -728,6 +732,16 @@ def _migrate_pg(conn: _PGConn) -> None:
     if "top_material" not in existing:
         conn._cur.execute("ALTER TABLE predictions ADD COLUMN top_material TEXT")
 
+    # materials: excluded (誤紐付け・市場全体ダイジェストの論理削除)
+    r = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='materials'"
+    ).fetchall()
+    existing_mat = {row["column_name"] for row in r}
+    if "excluded" not in existing_mat:
+        conn._cur.execute("ALTER TABLE materials ADD COLUMN excluded BOOLEAN DEFAULT FALSE")
+    if "exclude_reason" not in existing_mat:
+        conn._cur.execute("ALTER TABLE materials ADD COLUMN exclude_reason TEXT")
+
     # model_meta: model_data, promoted
     r = conn.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name='model_meta'"
@@ -780,6 +794,12 @@ def _migrate_sqlite(conn: _SQLiteConn) -> None:
         raw.execute("ALTER TABLE predictions ADD COLUMN origin TEXT DEFAULT 'live'")
     if "top_material" not in existing:
         raw.execute("ALTER TABLE predictions ADD COLUMN top_material TEXT")
+
+    existing_mat = {r[1] for r in raw.execute("PRAGMA table_info(materials)").fetchall()}
+    if "excluded" not in existing_mat:
+        raw.execute("ALTER TABLE materials ADD COLUMN excluded BOOLEAN DEFAULT 0")
+    if "exclude_reason" not in existing_mat:
+        raw.execute("ALTER TABLE materials ADD COLUMN exclude_reason TEXT")
 
     existing_mm = {r[1] for r in raw.execute("PRAGMA table_info(model_meta)").fetchall()}
     if "model_data" not in existing_mm:

@@ -405,6 +405,18 @@ _GENERIC_DIGEST_TITLE_PATTERNS = (
     # 開示は1件も無い)。「NN社選出」型の銘柄リストは主役企業が存在しない。
     # レーティング日報・滬港通の香港株上位10銘柄・日次相場コラムも同様。
     "社選出", "成長株特集", "レーティング日報", "滬港通", "株式明日の戦略",
+    # 2026-09-17追加(第3弾): 論理削除の適用後に高スコア材料(sentiment>=0.5)を
+    # 洗い直して残っていた集計枠。「本日/今週の【自社株買い】銘柄」(50件46銘柄、
+    # いずれも s=0.75)は発表企業を列挙するリストで主役企業が存在しない。
+    # 「コンビニ各社などが発表---月次動向」(10件9銘柄、s=0.75)、
+    # 「＜マ－ケット日報＞」(19件10銘柄)も同様。
+    # なお「<社名>－<値動き>　<理由>」型(株探/DZHの個別銘柄速報)は、主役企業が
+    # タイトル先頭に入るため一律除外してはいけない。2175(エス・エム・エス)の
+    # 「ＳＭＳ－3日ぶり反発　オアシスマネジメントの保有割合増加」は自社の本物の
+    # 材料だが、登録名の2文字スタブ「エス」が略称「ＳＭＳ」に一致しないため
+    # 自社名一致つきの除外に入れても誤除外される。この略称問題が解決するまで
+    # この型には手を付けない。
+    "【自社株買い】銘柄", "コンビニ各社などが発表", "マ－ケット日報",
 )
 
 
@@ -784,7 +796,8 @@ def recent_material_score(code: str, asof: str, lookback_days: int = 25) -> dict
         rows = conn.execute(
             "SELECT date,category,title,sentiment,impact,persistence,unpriced,connect,"
             "chart_reaction,volume_reaction,risk,material_type,ai_comment FROM materials "
-            "WHERE code=%s AND date BETWEEN %s AND %s ORDER BY date DESC",
+            "WHERE code=%s AND date BETWEEN %s AND %s AND NOT COALESCE(excluded, FALSE) "
+            "ORDER BY date DESC",
             (code, start, asof),
         ).fetchall()
     return score_material_rows(rows, asof)
@@ -808,7 +821,8 @@ def recent_material_scores_bulk(codes: list[str], asof: str, lookback_days: int 
             rows = conn.execute(
                 f"SELECT code,date,category,title,sentiment,impact,persistence,unpriced,connect,"
                 f"chart_reaction,volume_reaction,risk,material_type,ai_comment FROM materials "
-                f"WHERE code IN ({ph}) AND date BETWEEN %s AND %s ORDER BY code, date DESC",
+                f"WHERE code IN ({ph}) AND date BETWEEN %s AND %s "
+                f"AND NOT COALESCE(excluded, FALSE) ORDER BY code, date DESC",
                 tuple(part) + (start, asof),
             ).fetchall()
         for r in rows:
