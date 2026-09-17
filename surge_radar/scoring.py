@@ -11,14 +11,35 @@ from __future__ import annotations
 
 from .config import MIN_AVG_TURNOVER
 
-# サブスコア重み (相対評価の基礎)
+# サブスコア重み (相対評価の基礎)。
+#
+# 2026-09-17: 満期済み4,798件で各成分の top10 成功率(ベースライン14.8%)と
+# danger_fail率を実測し、run_date を8日/8日に分けたホールドアウトで配分を選んだ。
+#
+#   成分         成功率   danger   備考
+#   volatility   62.5%    20.6%   最強だがリスクも最大
+#   chart        42.5%    11.9%   是正後。リスク調整後で最良
+#   prob(ML)     40.0%    23.8%   composite側で別枠
+#   theme        23.8%     7.5%
+#   fundamental  22.5%     7.5%
+#   volume       19.4%    18.1%   リターンの割にリスクが高い
+#   similarity   18.1%     4.4%   最低リスク。分散に効く
+#   material     14.4%    17.5%   予測力なし(ベースライン並み)
+#
+# 旧配分は material 0.26 / chart 0.22 / volume 0.22 と、予測力のない3成分に
+# 全体の70%を割り当てていた。検証側 top10 は 35.0%(danger 32.5%)。
+# 採用した配分の検証側は 48.8%(danger 18.8%)。
+# なお全期間グリッドの最良配分は material に 0.20 を割り当てるが、単独で
+# 予測力のない成分に重みを置くのは過学習と判断し、danger が9pt低く成功率が
+# 同じこちらを採った。
 WEIGHTS = {
-    "material": 0.26,
-    "chart": 0.22,
-    "volume": 0.22,
-    "theme": 0.12,
-    "similarity": 0.12,
-    "fundamental": 0.06,
+    "chart": 0.33,
+    "similarity": 0.33,
+    "volatility": 0.22,
+    "volume": 0.05,
+    "theme": 0.05,
+    "fundamental": 0.02,
+    "material": 0.00,
 }
 
 
@@ -27,24 +48,61 @@ def _clip01(x: float) -> float:
 
 
 def chart_score(f: dict) -> float:
-    """理想形(下落止まり→横ばい→安値切り上げ→ブレイク)に近いほど高い。"""
-    s = 0.0
-    s += 0.18 * _clip01(f.get("downtrend_stopped", 0) + 0.5)   # 下落止まり
-    s += 0.14 * _clip01(f.get("volatility_contraction", 0))     # ボラ縮小
-    s += 0.12 * _clip01(f.get("sideways", 0))                   # 横ばい化
-    s += 0.16 * _clip01(f.get("higher_lows", 0) + 0.3)          # 安値切り上げ
-    s += 0.10 * _clip01(f.get("lower_highs_stopped", 0) + 0.3)  # 高値切り下げ停止
-    s += 0.16 * _clip01(f.get("near_breakout", 0))              # ブレイク接近
-    s += 0.08 * f.get("broke_resistance", 0)                    # 抵抗線突破
-    s += 0.06 * f.get("price_above_ma25", 0)
-    # 25日線が上向きでその上にいる
-    if f.get("ma25_slope", 0) > 0 and f.get("price_above_ma25", 0):
-        s += 0.05
-    # リスク減点
-    s -= 0.30 * _clip01(f.get("downtrend_risk", 0))            # 右肩下がり
-    s -= 0.15 * f.get("rebound_capped", 0)                     # 戻り売り
-    s -= 0.15 * f.get("high_zone_upper_wick", 0)               # 高値圏上ヒゲ
+    """安値切り上げ・下落止まりを評価し、動かない形と上値が詰まった形を減点する。
+
+    2026-09-17に満期済み4,798件で構成要素を個別測定したところ、旧実装
+    (下落止まり→ボラ縮小→横ばい→安値切り上げ→ブレイク という底固めの型を
+    高く評価する設計)は合成すると逆指標になっていた:
+    chart_score上位10件の成功率6.9%に対し、下位10件は15.0%(ベースライン14.8%)。
+
+    各要素の実測 (top10成功率、高い順 vs 低い順):
+      higher_lows            39.4% / 16.2%  → +23.2pt  最も強い正の要素
+      downtrend_stopped      28.7% / 15.6%  → +13.1pt
+      volatility_contraction 21.2% / 15.0%  →  +6.2pt
+      sideways                9.4% / 45.0%  → -35.6pt  ★旧実装は+0.12で加点
+      high_zone_upper_wick    5.0% / 25.6%  → -20.6pt  減点で正しい
+      near_breakout          16.9% / 33.1%  → -16.2pt  ★旧実装は+0.16で加点
+      downtrend_risk         26.9% / 18.8%  →  +8.1pt  ★旧実装は-0.30で最大の減点
+      lower_highs_stopped    30.6% / 35.0%  →  -4.4pt  誤差範囲
+      broke_resistance       20.0% / 23.1%  →  -3.1pt  誤差範囲
+      price_above_ma25       23.8% / 25.0%  →  -1.2pt  誤差範囲
+      rebound_capped         23.8% / 23.8%  →   0.0pt  効果なし
+
+    sideways(横ばい)と near_breakout(抵抗線に近い=上値が詰まっている)は
+    「20営業日で+20%動く」という目的に対して明確に逆方向だったため符号を反転。
+    効果量が5pt未満の4要素は削除した(16 run_date しかない標本で微小な差に
+    重みを付けても過学習になる)。
+
+    downtrend_risk は実測では正(右肩下がりのほうが成功率が高い)だが、これは
+    pct_from_52w_high で既に realistic_upside 側が評価している「高値から離れて
+    いるほど戻し余地が大きい」と同じ現象なので、ここで加点すると二重計上に
+    なる。符号を反転させるのではなく除外する。
+    """
+    s = 0.15
+    s += 0.30 * _clip01(f.get("higher_lows", 0) + 0.3)          # 安値切り上げ
+    s += 0.24 * _clip01(f.get("downtrend_stopped", 0) + 0.5)    # 下落止まり
+    s += 0.16 * _clip01(f.get("volatility_contraction", 0))     # ボラ縮小
+    s -= 0.30 * _clip01(f.get("sideways", 0))                   # 横ばい=動かない
+    s -= 0.20 * _clip01(f.get("near_breakout", 0))              # 上値が詰まっている
+    s -= 0.25 * f.get("high_zone_upper_wick", 0)                # 高値圏上ヒゲ
     return _clip01(s)
+
+
+def volatility_score(f: dict) -> float:
+    """20営業日で+20%動ける物理的な適性。
+
+    2026-09-17の実測(満期4,798件、ベースライン14.8%)で、直近20本の日中値幅
+    平均が単独で最も強い予測因子だった:
+      <2%:1.9%(n=365) / 2-3%:8.1%(1473) / 3-4%:11.0%(1430)
+      / 4-6%:21.6%(1143) / 6%超:45.5%(387)
+    判定カテゴリでも52週高値距離でも条件付けして単調性が保たれる。
+
+    8%で1.0に飽和させる。それ以上は上下の振れが対称に近づき(6%超帯は
+    +20%到達45.5%に対し-20%到達15.5%で比2.93と、2-3%帯の10.91より低い)、
+    青天井に加点する根拠がないため。
+    """
+    dr = f.get("daily_range_20", 0.0)
+    return _clip01(dr / 0.08)
 
 
 def volume_score(f: dict) -> float:
@@ -159,30 +217,9 @@ def realistic_upside(f: dict) -> float:
     elif p52 >= -0.15:
         s -= 0.25
 
-    # 2026-09-17判明: 20%値幅適性(ボラティリティ)がこの関数に一切入っていなかった。
-    # 「20営業日で+20%動けるか」を評価する関数でありながら、その銘柄が1日に
-    # どれだけ動くかを見ていない。満期4798件の実測では日中値幅(20本平均)が
-    # 単独で最強クラスの予測力を持つ:
-    #   <2%:1.9%(n=365) / 2-3%:8.1%(1473) / 3-4%:11.0%(1430)
-    #   / 4-6%:21.5%(1143) / 6%超:45.5%(387)  [ベースライン14.7%]
-    # 判定カテゴリ(B/D)でも52週高値距離でも条件付けして単調性が保たれるため、
-    # pct_from_52w_high や既存のボラ指標の言い換えではない(上値供給・Failure
-    # Line は2次元集計で言い換えと判明したため不採用にしたが、これは残る)。
-    # 実害として、日中値幅2.5%未満で A/B/C 判定に出た候補486件の成功率は5.1%。
-    # composite における upside の重みは12%しかないため、52週高値ペナルティと
-    # 同様に効果量に対して十分な振れ幅を持たせる。
-    dr = f.get("daily_range_20", 0.0)
-    if dr > 0:
-        if dr < 0.02:
-            s -= 0.8
-        elif dr < 0.03:
-            s -= 0.4
-        elif dr < 0.04:
-            s -= 0.15
-        elif dr < 0.06:
-            s += 0.15
-        else:
-            s += 0.35
+    # 2026-09-17: 当初この関数に日中値幅の加減点を入れたが、その後 volatility を
+    # 独立したサブスコア(WEIGHTS で0.22)に格上げしたため、ここに残すと二重計上に
+    # なる。値幅の評価は volatility_score() に一本化した。
     return _clip01(s)
 
 
@@ -214,6 +251,7 @@ def score_candidate(f: dict, ml_prob: float | None = None,
         "theme": theme_score(f),
         "similarity": float(similarity) if similarity is not None else 0.0,
         "fundamental": fundamental_score(f),
+        "volatility": volatility_score(f),
     }
     gates = exclusion_gates(f)
     upside = realistic_upside(f)
@@ -229,7 +267,15 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     sub["probability"] = round(prob, 4)  # _classify で高確率判定に使用
 
     # 総合: 相対(weighted) + 不確実性込みML + 火種(突出) + 現実到達余地
-    composite = (0.42 * weighted + 0.28 * prob + 0.18 * top + 0.12 * upside)
+    #
+    # 2026-09-17: 係数もホールドアウトで測り直した(検証8日、top10成功率)。
+    #   旧式+旧重み 35.0%(danger 32.5%) → 旧式+新重み 43.8%(25.0%)
+    #   → prob を 0.28→0.10 に下げて 48.8%(18.8%)
+    # ML確率は単独では40.0%と強いが danger_fail 23.8% と高く、0.28も配ると
+    # リスクだけが増えていた。top(火種)を削ると検証top20が35.0→36.9%と僅かに
+    # 上がるが top10 は同値で、材料の価値を測れるようになった時に効く可能性が
+    # あるため残している。
+    composite = (0.62 * weighted + 0.10 * prob + 0.18 * top + 0.10 * upside)
 
     # リスク減衰
     risk = 0.0
@@ -315,8 +361,12 @@ def _classify(sub: dict, f: dict, gates: list[str], upside: float, composite: fl
     st = sim_thresholds or {"strong": 0.68, "very_strong": 0.78}
     strong_material   = sub["material"] >= 0.5
     decent_material   = sub["material"] >= 0.3
-    good_chart        = sub["chart"] >= 0.55
-    fair_chart        = sub["chart"] >= 0.40
+    # 2026-09-17: chart_score の構成要素を実測に合わせて作り直した際、スコアの
+    # 分布が下にずれた(中央値 0.386 → 0.134)。旧閾値 0.55/0.40 のままだと
+    # A/B/C 候補がほぼ消滅するため、旧分布で同じパーセンタイル(91.9% / 52.2%)に
+    # あたる値に較正した。候補の出現数を変えずに中身だけ入れ替えるのが狙い。
+    good_chart        = sub["chart"] >= 0.43
+    fair_chart        = sub["chart"] >= 0.15
     good_volume       = sub["volume"] >= 0.50
     decent_volume     = sub["volume"] >= 0.35
     # 2026-08-14: 固定の magic number (0.68/0.78 →一時0.85/0.92) は、ライブサンプル
