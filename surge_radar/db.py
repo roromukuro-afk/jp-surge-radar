@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS model_meta (
     metrics     TEXT,
     feature_importance TEXT,
     notes       TEXT,
-    model_data  BYTEA
+    model_data  BYTEA,
+    promoted    BOOLEAN DEFAULT TRUE
 );
 
 CREATE TABLE IF NOT EXISTS job_logs (
@@ -316,7 +317,8 @@ CREATE TABLE IF NOT EXISTS model_meta (
     metrics     TEXT,
     feature_importance TEXT,
     notes       TEXT,
-    model_data  BLOB
+    model_data  BLOB,
+    promoted    BOOLEAN DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS job_logs (
@@ -627,13 +629,15 @@ def _migrate_pg(conn: _PGConn) -> None:
     if "top_material" not in existing:
         conn._cur.execute("ALTER TABLE predictions ADD COLUMN top_material TEXT")
 
-    # model_meta: model_data
+    # model_meta: model_data, promoted
     r = conn.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name='model_meta'"
     ).fetchall()
     existing = {row["column_name"] for row in r}
     if "model_data" not in existing:
         conn._cur.execute("ALTER TABLE model_meta ADD COLUMN model_data BYTEA")
+    if "promoted" not in existing:
+        conn._cur.execute("ALTER TABLE model_meta ADD COLUMN promoted BOOLEAN DEFAULT TRUE")
 
     # teacher_samples: UNIQUE インデックス
     r = conn.execute(
@@ -681,6 +685,8 @@ def _migrate_sqlite(conn: _SQLiteConn) -> None:
     existing_mm = {r[1] for r in raw.execute("PRAGMA table_info(model_meta)").fetchall()}
     if "model_data" not in existing_mm:
         raw.execute("ALTER TABLE model_meta ADD COLUMN model_data BLOB")
+    if "promoted" not in existing_mm:
+        raw.execute("ALTER TABLE model_meta ADD COLUMN promoted BOOLEAN DEFAULT 1")
 
     idx_names = {r[1] for r in raw.execute("SELECT * FROM sqlite_master WHERE type='index'").fetchall()}
     if "idx_teacher_code_date" not in idx_names:
