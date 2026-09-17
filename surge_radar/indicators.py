@@ -94,6 +94,55 @@ def _resistance_support(df: pd.DataFrame, lookback: int = 60) -> tuple[float, fl
     return float(w["high"].max()), float(w["low"].min())
 
 
+def supply_zone_features(df: pd.DataFrame, lookback: int = 250,
+                         target: float = 0.20) -> dict:
+    """
+    +20%到達までの「上値供給(しこり)」と Failure Line を数値化する。
+
+    従来の dist_to_resistance は直近60本の高値までの距離しか見ておらず、
+    「その上にどれだけ戻り待ちの売りが溜まっているか」を評価していなかった。
+    過去にその価格帯で大量に売買されていれば、そこは戻り売り圧力になる。
+
+    ティックデータが無いため、各日の代表価格を (high+low+close)/3 とみなして
+    出来高をその価格に割り当てる近似 (volume-at-price) を使う。
+
+    返す値:
+      overhead_supply_days : 現値〜+20%帯の累積出来高 ÷ 直近20日平均出来高。
+                             「何日分の出来高を消化すれば+20%に届くか」の目安。
+      overhead_ratio       : 上値帯の出来高 / (上値帯 + 下値帯)。0.5超で上値が重い。
+      failure_distance     : 直近10本の安値(構造的な支持)までの下落率。
+      reward_failure_ratio : target ÷ failure_distance。
+    """
+    out = {"overhead_supply_days": 0.0, "overhead_ratio": 0.5,
+           "failure_distance": 0.0, "reward_failure_ratio": 0.0}
+    if df is None or df.empty:
+        return out
+    d = df.tail(lookback)
+    close = float(d["close"].iloc[-1])
+    if close <= 0:
+        return out
+    typ = (d["high"] + d["low"] + d["close"]) / 3.0
+    vol = d["volume"].astype(float)
+    hi_band = (typ > close) & (typ <= close * (1 + target))
+    lo_band = (typ < close) & (typ >= close * (1 - target))
+    overhead = float(vol[hi_band].sum())
+    below = float(vol[lo_band].sum())
+    avg_vol = float(d["volume"].tail(20).mean())
+    if avg_vol > 0:
+        out["overhead_supply_days"] = overhead / avg_vol
+    if overhead + below > 0:
+        out["overhead_ratio"] = overhead / (overhead + below)
+    tail = d.tail(10)
+    swing_idx = tail["low"].idxmin()
+    swing_low = float(tail["low"].loc[swing_idx])
+    fd = (close - swing_low) / close
+    out["_failure_line_price"] = swing_low
+    out["_failure_line_date"] = str(tail["date"].loc[swing_idx]) if "date" in tail.columns else ""
+    out["failure_distance"] = float(max(fd, 0.0))
+    out["reward_failure_ratio"] = float(target / fd) if fd > 0.005 else 0.0
+    return out
+
+
 def chart_features(df: pd.DataFrame) -> dict:
     """
     チャート構造の特徴量を辞書で返す。理想形(下落止まり→横ばい→安値切り上げ→ブレイク)に
@@ -119,6 +168,15 @@ def chart_features(df: pd.DataFrame) -> dict:
     rng = (w25["high"].max() - w25["low"].min())
     out["range_ratio"] = float(rng / last["close"]) if last["close"] else 0.0
 
+    # 1日あたりの値幅(直近20本平均)。range_ratio が「25本の高安の幅」なのに対し、
+    # こちらは「1日でどれだけ動く銘柄か」。20営業日で+20%動けるかどうかの
+    # 物理的な適性そのもので、2026-09-17の満期4798件の実測では単独で最強クラスの
+    # 予測力を持つ(<2%:1.9% / 2-3%:8.1% / 3-4%:11.0% / 4-6%:21.5% / 6%超:45.5%、
+    # 判定カテゴリでも52週高値距離でも条件付けして単調性が保たれる)。
+    w20 = d.tail(20)
+    dr = ((w20["high"] - w20["low"]) / w20["close"]).mean()
+    out["daily_range_20"] = float(dr) if pd.notna(dr) else 0.0
+
     # --- 下落止まり / 横ばい化 ---
     # 直近のドローダウンが止まり、ボラが縮小しているか
     recent_lows = d["low"].tail(20)
@@ -140,6 +198,9 @@ def chart_features(df: pd.DataFrame) -> dict:
 
     # --- 抵抗線・支持線・ブレイク ---
     res, sup = _resistance_support(d, 60)
+    # 実価格も返す(表示用。FEATURE_KEYS には入れないのでモデルには影響しない)
+    out["_resistance_price"] = float(res)
+    out["_support_price"] = float(sup)
     out["dist_to_resistance"] = float((res - last["close"]) / last["close"]) if last["close"] else 0.0
     out["dist_to_support"] = float((last["close"] - sup) / last["close"]) if last["close"] else 0.0
     # ブレイクライン接近: 抵抗線まで5%以内

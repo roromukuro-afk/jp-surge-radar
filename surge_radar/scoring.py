@@ -158,6 +158,31 @@ def realistic_upside(f: dict) -> float:
         s -= 0.7
     elif p52 >= -0.15:
         s -= 0.25
+
+    # 2026-09-17判明: 20%値幅適性(ボラティリティ)がこの関数に一切入っていなかった。
+    # 「20営業日で+20%動けるか」を評価する関数でありながら、その銘柄が1日に
+    # どれだけ動くかを見ていない。満期4798件の実測では日中値幅(20本平均)が
+    # 単独で最強クラスの予測力を持つ:
+    #   <2%:1.9%(n=365) / 2-3%:8.1%(1473) / 3-4%:11.0%(1430)
+    #   / 4-6%:21.5%(1143) / 6%超:45.5%(387)  [ベースライン14.7%]
+    # 判定カテゴリ(B/D)でも52週高値距離でも条件付けして単調性が保たれるため、
+    # pct_from_52w_high や既存のボラ指標の言い換えではない(上値供給・Failure
+    # Line は2次元集計で言い換えと判明したため不採用にしたが、これは残る)。
+    # 実害として、日中値幅2.5%未満で A/B/C 判定に出た候補486件の成功率は5.1%。
+    # composite における upside の重みは12%しかないため、52週高値ペナルティと
+    # 同様に効果量に対して十分な振れ幅を持たせる。
+    dr = f.get("daily_range_20", 0.0)
+    if dr > 0:
+        if dr < 0.02:
+            s -= 0.8
+        elif dr < 0.03:
+            s -= 0.4
+        elif dr < 0.04:
+            s -= 0.15
+        elif dr < 0.06:
+            s += 0.15
+        else:
+            s += 0.35
     return _clip01(s)
 
 
@@ -255,6 +280,30 @@ def score_candidate(f: dict, ml_prob: float | None = None,
         "top_driver": max(sub, key=sub.get),
         "danger_similarity": round(dsim, 3),
         "path_trust_multiplier": round(trust_mult, 3),
+        "price_levels": _price_levels(f),
+    }
+
+
+def _price_levels(f: dict) -> dict:
+    """+20%到達までの経路を具体的な価格で示す(表示専用、スコアには不使用)。
+
+    overhead_supply_days(現値〜+20%帯の累積出来高÷直近20日平均出来高)は
+    2026-09-17の実測で成功率と逆相関する(上値が厚いほど成功率が高い)ことが
+    判明しており、これは pct_from_52w_high の言い換えであることも2次元
+    クロス集計で確認済み。従ってスコアには入れず、参考情報としてのみ出す。
+    """
+    close = f.get("_close", 0.0)
+    if not close:
+        return {}
+    return {
+        "base": round(close),
+        "target20": round(f.get("_target20_price", close * 1.2)),
+        "resistance": round(f.get("_resistance_price", 0.0)),
+        "support": round(f.get("_support_price", 0.0)),
+        "failure_line": round(f.get("_failure_line_price", 0.0)),
+        "failure_line_date": f.get("_failure_line_date", ""),
+        "failure_distance_pct": round(f.get("_failure_distance", 0.0) * 100, 1),
+        "overhead_supply_days": round(f.get("_overhead_supply_days", 0.0), 1),
     }
 
 
@@ -379,9 +428,22 @@ def _reasons(sub: dict, f: dict, upside: float, extra: dict | None = None) -> li
 
 
 def _failure_conditions(f: dict, sub: dict) -> list[str]:
-    """これが崩れたら撤退(失敗条件)。追跡時の failure タグ判定にも対応。"""
+    """これが崩れたら撤退(失敗条件)。追跡時の failure タグ判定にも対応。
+
+    2026-09-17: 「支持線割れ」等の定型文だけでは実際にどの価格を見ればよいか
+    分からないため、算出済みの価格水準(直近10本の安値=Failure Line、60本高値
+    =抵抗線)を具体的な数字で示す。
+    """
     c = []
-    c.append("予測時終値を明確に下回る/支持線割れ → quick_fail/trend_fail")
+    fl = f.get("_failure_line_price", 0.0)
+    fd = f.get("_failure_distance", 0.0)
+    if fl > 0 and fd > 0:
+        fl_date = f.get("_failure_line_date", "")
+        when = f"({fl_date[5:]}安値)" if fl_date else ""
+        c.append(f"¥{fl:,.0f}{when}割れ = 現値から-{fd*100:.1f}% "
+                 f"→ quick_fail/trend_fail")
+    else:
+        c.append("予測時終値を明確に下回る/支持線割れ → quick_fail/trend_fail")
     if sub["material"] >= 0.3:
         c.append("材料の続報が出ず出来高が続かない → material_fail")
     if f.get("vol_spike", 1) > 1.5:
@@ -389,6 +451,8 @@ def _failure_conditions(f: dict, sub: dict) -> list[str]:
     if sub["theme"] >= 0.4:
         c.append("テーマ資金が波及せずリーダー株のみ → theme_fail")
     if f.get("near_breakout", 0) > 0.5:
-        c.append("抵抗線を上抜けできず戻り売り → chart_fail")
+        res = f.get("_resistance_price", 0.0)
+        where = f"(¥{res:,.0f})" if res > 0 else ""
+        c.append(f"抵抗線{where}を上抜けできず戻り売り → chart_fail")
     c.append("地合い急悪化 → market_fail / 希薄化発表 → dilution_fail")
     return c

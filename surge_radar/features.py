@@ -72,6 +72,9 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
         "higher_lows", "lower_highs_stopped", "dist_to_resistance", "dist_to_support",
         "near_breakout", "broke_resistance", "gap_up", "pct_from_52w_high",
         "downtrend_risk", "rebound_capped", "upper_wick_ratio", "high_zone_upper_wick",
+        # FEATURE_KEYS には入れない(モデルの入力ベクトル長を変えると既存の
+        # 学習済みバンドルが使えなくなるため)。scoring の値幅適性判定でのみ使う。
+        "daily_range_20",
     ]})
     di = ind.iloc[-1]
     feats["rsi14"] = float(di["rsi14"]) if pd.notna(di["rsi14"]) else 50.0
@@ -101,6 +104,18 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
     # 価格水準・流動性
     feats["price_level_norm"] = float(min(close / PRICE_CAP, 2.0))
     feats["liquidity_ok"] = int(turnover_avg >= MIN_AVG_TURNOVER)
+
+    # 価格水準(表示用メタ)。+20%閾値までの経路を具体的な価格で示すために使う。
+    # FEATURE_KEYS に入れていないためモデル/類似度には影響しない
+    # (生の価格は銘柄間でスケールが違い、特徴量としては意味を持たないため)。
+    sz = indicators.supply_zone_features(sub)
+    feats["_resistance_price"] = cf.get("_resistance_price", 0.0)
+    feats["_support_price"] = cf.get("_support_price", 0.0)
+    feats["_failure_line_price"] = sz.get("_failure_line_price", 0.0)
+    feats["_failure_line_date"] = sz.get("_failure_line_date", "")
+    feats["_failure_distance"] = sz.get("failure_distance", 0.0)
+    feats["_overhead_supply_days"] = sz.get("overhead_supply_days", 0.0)
+    feats["_target20_price"] = close * 1.20
 
     # メタ(非特徴)
     feats["_close"] = close

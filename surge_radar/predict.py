@@ -194,7 +194,9 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
                        "n_materials": mat.get("n_materials", 0),
                        # --- 自律学習フィードバック (learning.py) ---
                        "danger_similarity": r.get("danger_similarity", 0.0),
-                       "path_trust_multiplier": r.get("path_trust_multiplier", 1.0)}),
+                       "path_trust_multiplier": r.get("path_trust_multiplier", 1.0),
+                       # --- 価格水準 (表示用、スコアには不使用) ---
+                       "price_levels": r.get("price_levels", {})}),
                  predictor.version or "rules", origin, top_mat),
             )
             stored += 1
@@ -202,9 +204,20 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     cat_counts = {}
     for r in scored[:store_top]:
         cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
+    # Coverage: 「全市場をスキャンした」と誇張せず、実際にどこまで評価できたかを残す。
+    # skipped は価格条件外・履歴不足の合算、材料取得は momentum pool に限定される。
+    coverage = {
+        "universe": n_before,
+        "priced": len(codes),
+        "evaluated": len(scored),
+        "skipped": skipped,
+        "materials_fetched": len(momentum_codes),
+        "stored": stored,
+    }
     return {"run_date": run_date, "evaluated": len(scored), "skipped": skipped,
             "stored": stored, "model_version": predictor.version or "rules",
             "categories": cat_counts, "market_score": market_score,
+            "coverage": coverage,
             "materials_pre_enriched": momentum_codes}
 
 
