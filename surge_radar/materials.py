@@ -84,6 +84,20 @@ _INCIDENT_OVERRIDE_KEYWORDS = (
     "労災", "死傷", "遺体", "不祥事", "検察", "書類送検",
 )
 
+# 2026-09-17判明: 3565(アセンテック)の「オリックス、アセンテックのTOB不成立
+# 子会社化断念」が、本文中の「TOB」に単純キーワードマッチして
+# sentiment=+0.75/impact=0.9 の好材料【TOB】に誤分類されていた(「不成立」
+# 「断念」という失敗を示す語を一切見ていないため)。TOB/M&A/受注/承認等の
+# "プロセス系"好材料キーワードは、不成立・否決等の語と同時に出現した場合、
+# 方向を反転させる(成立/獲得できなかった、の意味になるため)。
+_PROCESS_FAILURE_KEYWORDS = (
+    "不成立", "不採択", "否決", "破談", "白紙撤回", "断念", "撤回", "不承認", "却下",
+)
+_PROCESS_KEYWORDS = {
+    "TOB", "公開買付", "M&A", "買収", "提携", "資本業務提携", "受注", "大型受注",
+    "承認", "認可", "薬事", "特許", "採択",
+}
+
 # テーマ語彙 (マクロ/業界)。テーマ地合いと併用。
 THEME_KEYWORDS = {
     "半導体": ["半導体", "ウエハ", "後工程", "前工程", "ファウンドリ", "SoC", "メモリ"],
@@ -115,6 +129,13 @@ def classify_material(title: str, body: str = "") -> dict:
     # 誤分類されていた(死亡事故・家宅捜索という強いネガティブ文脈を一切見ていない
     # ため)。事故/事件系の語が含まれる場合は、偶発的に一致した好材料方向の
     # キーワードを無視する。
+    if any(k in text for k in _PROCESS_FAILURE_KEYWORDS):
+        hits = [
+            (kw, imp, per, -1) if kw in _PROCESS_KEYWORDS and direction > 0
+            else (kw, imp, per, direction)
+            for kw, imp, per, direction in hits
+        ]
+
     if any(k in text for k in _INCIDENT_OVERRIDE_KEYWORDS):
         hits = [h for h in hits if h[3] < 0]
 
