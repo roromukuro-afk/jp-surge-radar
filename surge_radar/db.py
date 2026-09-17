@@ -132,6 +132,57 @@ CREATE TABLE IF NOT EXISTS prediction_outcomes (
     FOREIGN KEY (prediction_id) REFERENCES predictions(id)
 );
 
+-- 深掘り分析(LLMによる材料7軸/Reachable Zone/Failure Line判定)。
+-- predictions とは独立した第2の予測系列として保存し、同じ labeling 関数・
+-- 同じ20営業日基準で judge することで、どちらの判定が当たるかを実測する。
+CREATE TABLE IF NOT EXISTS deep_analysis (
+    id              BIGSERIAL PRIMARY KEY,
+    run_date        TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    name            TEXT,
+    base_price      REAL,
+    base_date       TEXT,
+    rank            INTEGER,
+    entry_type      TEXT,
+    driver_score    INTEGER,
+    risk_score      INTEGER,
+    driver_kind     TEXT,
+    catalyst_type   TEXT,
+    catalyst_date   TEXT,
+    unpriced        REAL,
+    target20_price  REAL,
+    reachable_low   REAL,
+    reachable_high  REAL,
+    reachable_ok    INTEGER,
+    failure_line    REAL,
+    failure_distance REAL,
+    rationale       TEXT,
+    sources         TEXT,
+    analyst         TEXT,
+    status          TEXT DEFAULT 'open',
+    created_at      TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_date, code)
+);
+CREATE INDEX IF NOT EXISTS idx_deep_run ON deep_analysis(run_date);
+CREATE INDEX IF NOT EXISTS idx_deep_status ON deep_analysis(status);
+
+CREATE TABLE IF NOT EXISTS deep_analysis_outcomes (
+    analysis_id     BIGINT PRIMARY KEY,
+    judged_date     TEXT,
+    bars_tracked    INTEGER,
+    max_up_5d       REAL,
+    max_up_10d      REAL,
+    max_up_20d      REAL,
+    days_to_20pct   INTEGER,
+    max_drawdown    REAL,
+    result_class    TEXT,
+    failure_tags    TEXT,
+    hit_reachable   INTEGER,
+    hit_failure_line INTEGER,
+    updated_at      TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (analysis_id) REFERENCES deep_analysis(id)
+);
+
 CREATE TABLE IF NOT EXISTS teacher_samples (
     id          BIGSERIAL PRIMARY KEY,
     source      TEXT,
@@ -307,6 +358,54 @@ CREATE TABLE IF NOT EXISTS teacher_samples (
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_teacher_source ON teacher_samples(source);
+
+CREATE TABLE IF NOT EXISTS deep_analysis (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date        TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    name            TEXT,
+    base_price      REAL,
+    base_date       TEXT,
+    rank            INTEGER,
+    entry_type      TEXT,
+    driver_score    INTEGER,
+    risk_score      INTEGER,
+    driver_kind     TEXT,
+    catalyst_type   TEXT,
+    catalyst_date   TEXT,
+    unpriced        REAL,
+    target20_price  REAL,
+    reachable_low   REAL,
+    reachable_high  REAL,
+    reachable_ok    INTEGER,
+    failure_line    REAL,
+    failure_distance REAL,
+    rationale       TEXT,
+    sources         TEXT,
+    analyst         TEXT,
+    status          TEXT DEFAULT 'open',
+    created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_date, code)
+);
+CREATE INDEX IF NOT EXISTS idx_deep_run ON deep_analysis(run_date);
+CREATE INDEX IF NOT EXISTS idx_deep_status ON deep_analysis(status);
+
+CREATE TABLE IF NOT EXISTS deep_analysis_outcomes (
+    analysis_id     INTEGER PRIMARY KEY,
+    judged_date     TEXT,
+    bars_tracked    INTEGER,
+    max_up_5d       REAL,
+    max_up_10d      REAL,
+    max_up_20d      REAL,
+    days_to_20pct   INTEGER,
+    max_drawdown    REAL,
+    result_class    TEXT,
+    failure_tags    TEXT,
+    hit_reachable   INTEGER,
+    hit_failure_line INTEGER,
+    updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (analysis_id) REFERENCES deep_analysis(id)
+);
 
 CREATE TABLE IF NOT EXISTS model_meta (
     version     TEXT PRIMARY KEY,

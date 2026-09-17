@@ -18,7 +18,8 @@ import sys
 import traceback
 from datetime import datetime
 
-from . import db, ingest, learning, materials, predict, push_notify, themes, track, train, universe
+from . import (db, deep_track, ingest, learning, materials, predict, push_notify,
+               themes, track, train, universe)
 
 
 def _log_start(job: str) -> int:
@@ -294,6 +295,9 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
 
         summary["themes"] = step("themes", themes_step, asof)
         summary["track"] = step("track", track.track_all, asof)
+        # 深掘り分析(deep_analysis)も同じ基準で追跡する。エンジンの判定と
+        # 突き合わせるため、判定関数・判定窓は predictions 側と共通。
+        summary["track_deep"] = step("track_deep", deep_track.track_deep, asof)
 
         if retrain_if_needed:
             summary["teacher_status"] = step("teacher_status", train.ensure_historical)
