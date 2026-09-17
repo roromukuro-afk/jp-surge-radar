@@ -1128,12 +1128,47 @@ def fetch_yahoo_jp_batch(codes: list[str], pause: float = 0.5,
     return _fetch_batch_concurrent(codes, fetch_yahoo_jp_news, max_codes, "yahoojp", pause)
 
 
+def _parse_nikkei_date(text: str, now: datetime) -> str:
+    """
+    日経の銘柄別ニュース一覧の日付表記を YYYY-MM-DD に変換する。
+    実表記は4パターン: "18:13"(当日・時刻のみ) / "9/16" / "2025/12/5" /
+    "9/15更新"。年が省略された表記で月日が未来になる場合は前年とみなす。
+    解釈できない場合は "" を返す(呼び出し側で当日扱いにフォールバック)。
+    """
+    t = (text or "").strip().replace("更新", "").strip()
+    if not t:
+        return ""
+    if ":" in t and "/" not in t:
+        return now.strftime("%Y-%m-%d")
+    parts = t.split("/")
+    try:
+        if len(parts) == 3:
+            yr, mm, dd = int(parts[0]), int(parts[1]), int(parts[2].split()[0])
+        elif len(parts) == 2:
+            mm, dd = int(parts[0]), int(parts[1].split()[0])
+            yr = now.year
+            if (mm, dd) > (now.month, now.day):
+                yr -= 1
+        else:
+            return ""
+        return f"{yr:04d}-{mm:02d}-{dd:02d}"
+    except Exception:
+        return ""
+
+
 def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict]:
     """
     日本経済新聞 会社情報の銘柄別ニュース見出し一覧。
     URL: https://www.nikkei.com/nkd/company/news/?scode={code}
-    本文は有料会員限定だが、見出し一覧自体は無料公開されている。時刻のみ
-    (日付なし)で表示されるため「本日」扱いとする(一覧は直近ニュース中心)。
+    本文は有料会員限定だが、見出し一覧自体は無料公開されている。
+
+    2026-09-17まで、この関数は全見出しを無条件に「本日」付けで保存していた
+    (一覧は直近ニュース中心だろうという前提)。実際にはニュースの少ない銘柄では
+    数週間〜1年以上前の記事が一覧の先頭に居座り続けるため、古い記事が毎日
+    "新しい材料" として再登録されていた(例: 4180Appierの「最終増益」は8/17の
+    記事だが9/8〜9/16の毎日に保存、6310井関農機の「上方修正」記事は2025-11-14
+    公開)。鮮度減衰ロジックが効かず has_fresh_material も常時1になるため、
+    一覧に表示されている実際の日付(.m-listItem_time)を使う。
     session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
     try:
@@ -1152,7 +1187,8 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
-        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
         for li in soup.select("li.m-listFormat_item")[:max_items]:
             a = li.select_one(".m-listItem_text_text a")
             if not a:
@@ -1163,7 +1199,10 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
             href = a.get("href", "")
             if href and not href.startswith("http"):
                 href = "https://www.nikkei.com" + href
-            out.append({"date": today, "title": title, "url": href, "source": "nikkei"})
+            time_el = li.select_one(".m-listItem_time")
+            date_str = _parse_nikkei_date(
+                time_el.get_text(strip=True) if time_el else "", now) or today
+            out.append({"date": date_str, "title": title, "url": href, "source": "nikkei"})
         return out
     except Exception:
         return []
