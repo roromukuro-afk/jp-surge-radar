@@ -23,7 +23,8 @@ def _is_backfill(asof: str) -> bool:
 
 def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
              use_materials: bool = True, asof: str | None = None, on_progress=None,
-             limit: int | None = None, store: bool = True) -> dict:
+             limit: int | None = None, store: bool = True,
+             hist_map: dict | None = None) -> dict:
     """
     asof を指定すると、その日付(以前の直近営業日)時点で評価する過去バックフィル予測。
     run_date は予測の保存日(=T0)。指定なしは asof と同じ/本日。
@@ -62,7 +63,12 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
     # 上限)。450暦日あれば日本の年間取引日数(~245日)を考慮しても260営業日を十分
     # カバーできる。全2年分を毎日転送するとNeonのデータ転送量を無駄に消費するため
     # 必要な分だけ取得する(計算結果は全期間取得時と完全一致・検証済み)。
-    hist_map = ingest.load_history_bulk(codes, lookback_days=450, as_of=asof)
+    # hist_map を渡された場合は再取得しない。asof でのスライスはメモリ上で
+    # 行っているため、過去日付を連続で処理するバックフィルでは全期間を一度だけ
+    # 読んで使い回せる(1日あたり3,550銘柄×450日のNeon転送が毎回発生するのが
+    # バックフィルの主なボトルネックだった: 1日251秒)。
+    if hist_map is None:
+        hist_map = ingest.load_history_bulk(codes, lookback_days=450, as_of=asof)
 
     # 値動き/出来高の立ち上がり銘柄には、スコアリング前にKabutan/みんかぶ/Yahoo!JP/日経の
     # 見出しを先取り取得する。EDINET/TDnetの正式開示は「発表→買われて出来高が上がって

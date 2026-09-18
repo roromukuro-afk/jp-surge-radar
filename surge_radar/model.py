@@ -445,13 +445,25 @@ class Predictor:
         # train → predict の順に走るが、train.retrain() は新規サンプルが
         # min_new_samples 未満だとスキップするので、古いバンドルのまま predict に
         # 到達しうる。その場合はモデル無し(ルールのみ)に縮退させる。
+        # scaler だけでなく、類似度用の NearestNeighbors も別の特徴量サブセット
+        # (SIMILARITY_FEATURE_INDICES)で fit されているため両方を検査する。
+        # scaler だけ見ていて nn で ValueError になった実例あり(2026-09-17)。
+        checks = []
         try:
-            n_expected = int(self.bundle["scaler"].n_features_in_)
+            checks.append((int(self.bundle["scaler"].n_features_in_), len(FEATURE_KEYS)))
         except Exception:
-            return True
-        if n_expected != len(FEATURE_KEYS):
-            print(f"    [model] feature 次元不一致 (bundle={n_expected}, "
-                  f"現在={len(FEATURE_KEYS)}) — 再学習までルールのみで動作", flush=True)
+            pass
+        for key in ("nn", "danger_nn"):
+            obj = self.bundle.get(key)
+            if obj is not None:
+                try:
+                    checks.append((int(obj.n_features_in_), len(SIMILARITY_FEATURE_INDICES)))
+                except Exception:
+                    pass
+        bad = [(a, b) for a, b in checks if a != b]
+        if bad:
+            print(f"    [model] feature 次元不一致 {bad} — 再学習までルールのみで動作",
+                  flush=True)
             self.bundle = None
             return False
         return True
