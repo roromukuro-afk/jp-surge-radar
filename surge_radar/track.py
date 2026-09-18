@@ -174,9 +174,16 @@ def _add_teacher(pred, feats: dict, label: int, fail_tags: list[str], result: st
             "SELECT 1 FROM teacher_samples WHERE prediction_id=%s", (pred["id"],)).fetchone()
         if exists:
             return
+        # teacher_samples は (code, t0_date) に一意制約がある。seed-teacher が作った
+        # historical_pos/neg は過去日付を広くカバーしているため、バックフィル予測は
+        # 同じ (銘柄, 日付) で衝突しうる。prediction_id の確認だけでは防げず、
+        # 2026-09-18 に UniqueViolation で track_all が途中停止した。その時点で
+        # status='judged' の更新に到達しないため、次回も同じ予測を処理して同じ所で
+        # 落ち続け、live 予測の判定まで止まる。衝突したら既存を残す — 同じ1点を
+        # 2件入れるとその点だけ二重に学習されるため。
         conn.execute(
             "INSERT INTO teacher_samples(source,code,t0_date,label,features,tags,prediction_id)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s)",
+            " VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (code, t0_date) DO NOTHING",
             (source, pred["code"], pred["run_date"], label,
              db.j(feats), db.j({"failure_tags": fail_tags, "result": result}), pred["id"]),
         )
