@@ -95,11 +95,16 @@ def _score_with(r: dict, w: dict, c: dict) -> float:
             + c["top"] * top + c["upside"] * r["upside"])
 
 
-def load_matured_samples(max_run_dates: int = 40) -> list[dict]:
+def load_matured_samples(max_run_dates: int = 60) -> list[dict]:
     """満期済み予測を、サブスコアを再計算した形で返す。
 
     保存済みのサブスコアは「その時点のコードで計算した値」なので、
     scoring.py を直した後の較正には使えない。features から計算し直す。
+
+    run_date が多いと計算に時間がかかる(1日300件ぶん score_candidate を回す)。
+    バックフィルで数百日ぶんになったため、日次パイプラインの時間内に収まるよう
+    期間全体から均等に max_run_dates 日を間引いて使う。直近だけに寄せないのは、
+    特定の地合いの期間に較正が偏るのを避けるため。
     """
     import pandas as pd
 
@@ -113,7 +118,7 @@ def load_matured_samples(max_run_dates: int = 40) -> list[dict]:
         cutoff = dates[-21]
         preds = conn.execute("""
             SELECT p.code, p.run_date, p.probability, p.similarity_score, p.features,
-                   o.result_class
+                   p.origin, o.result_class
             FROM predictions p JOIN prediction_outcomes o ON o.prediction_id = p.id
             WHERE p.run_date <= %s AND o.result_class IS NOT NULL
             ORDER BY p.run_date DESC
@@ -121,8 +126,13 @@ def load_matured_samples(max_run_dates: int = 40) -> list[dict]:
     if not preds:
         return []
 
-    keep = sorted({p["run_date"] for p in preds})[-max_run_dates:]
-    preds = [p for p in preds if p["run_date"] in set(keep)]
+    all_dates = sorted({p["run_date"] for p in preds})
+    if len(all_dates) > max_run_dates:
+        stride = len(all_dates) / max_run_dates
+        keep = {all_dates[int(i * stride)] for i in range(max_run_dates)}
+    else:
+        keep = set(all_dates)
+    preds = [p for p in preds if p["run_date"] in keep]
 
     codes = sorted({p["code"] for p in preds})
     px: dict[str, list] = {}
@@ -163,6 +173,7 @@ def load_matured_samples(max_run_dates: int = 40) -> list[dict]:
                 similarity=float(p["similarity_score"] or 0), sim_thresholds=sim_th)
             out.append({
                 "run_date": rd,
+                "origin": p["origin"] or "live",
                 "success": p["result_class"] in SUCCESS,
                 "danger": p["result_class"] == "danger_fail",
                 "sub": res["sub"],
@@ -186,24 +197,36 @@ def measure_components(rows: list[dict]) -> dict:
     return out
 
 
-def _grid():
+def _grid(sim_weight: float):
+    """価格由来の成分の重みだけを探索する。similarity は sim_weight に固定する。
+
+    バックフィル予測の similarity と prob は先読みで汚染されている: 過去日を
+    採点したモデルはその日より後の結果を学習済みで、similarity の正例プールにも
+    その銘柄の将来の急騰が入りうる。これらの重みをバックフィル込みで学習すると
+    楽観的に過大評価される。chart/volatility/volume/theme/fundamental/material は
+    特徴量が価格(と当時の材料)から作られるので汚染されない。
+    """
     steps = (0.0, 0.1, 0.2, 0.3)
-    vols = (0.0, 0.1, 0.2, 0.3)
-    for wc, wsim, wv, wm in product(steps, steps, vols, steps):
-        used = wc + wsim + wv + wm
-        if used > 0.95 or used < 0.5:
+    vols = (0.1, 0.2, 0.3, 0.4)
+    budget = 1.0 - sim_weight
+    for wc, wv, wm in product(steps, vols, steps):
+        used = wc + wv + wm
+        if used > budget - 0.02 or used < budget * 0.5:
             continue
-        rest = 1.0 - used
-        yield {"chart": wc, "similarity": wsim, "volatility": wv, "material": wm,
+        rest = budget - used
+        yield {"chart": wc, "similarity": sim_weight, "volatility": wv, "material": wm,
                "volume": rest * 0.4, "theme": rest * 0.4, "fundamental": rest * 0.2}
 
 
-COEFF_GRID = (
-    {"weighted": 0.62, "prob": 0.10, "top": 0.18, "upside": 0.10},
-    {"weighted": 0.52, "prob": 0.20, "top": 0.18, "upside": 0.10},
-    {"weighted": 0.42, "prob": 0.28, "top": 0.18, "upside": 0.12},
-    {"weighted": 0.72, "prob": 0.10, "top": 0.08, "upside": 0.10},
-)
+def _coeff_grid(prob_coeff: float):
+    """composite 係数の探索。prob は prob_coeff に固定する(理由は _grid と同じ)。"""
+    for top in (0.08, 0.13, 0.18):
+        for upside in (0.05, 0.10, 0.15):
+            weighted = 1.0 - prob_coeff - top - upside
+            if weighted <= 0.3:
+                continue
+            yield {"weighted": round(weighted, 4), "prob": prob_coeff,
+                   "top": top, "upside": upside}
 
 
 def calibrate(store: bool = True, notes: str = "") -> dict:
@@ -224,29 +247,43 @@ def calibrate(store: bool = True, notes: str = "") -> dict:
     train = [r for r in rows if r["run_date"] in set(dates[:half])]
     test = [r for r in rows if r["run_date"] in set(dates[half:])]
 
-    cur_w = dict(scoring.WEIGHTS)
-    cur_c = dict(scoring.COMPOSITE_COEFFS)
+    cur_w, cur_c = scoring.active_weights()
     cur_s, cur_d, _ = _topk(test, lambda r: _score_with(r, cur_w, cur_c))
 
+    # similarity の重みと prob 係数は現行値に固定して探索する(_grid の説明を参照)
     best = None
-    for w in _grid():
-        for c in COEFF_GRID:
+    for w in _grid(cur_w.get("similarity", 0.0)):
+        for c in _coeff_grid(cur_c.get("prob", 0.10)):
             s, _, _ = _topk(train, lambda r, w=w, c=c: _score_with(r, w, c))
             if best is None or s > best[0]:
                 best = (s, w, c)
     _, bw, bc = best
     new_s, new_d, n_te = _topk(test, lambda r: _score_with(r, bw, bc))
 
+    # 実運用に近い live 由来の日だけでも同じ比較を出しておく。バックフィル分は
+    # prob/similarity が先読み込みの値なので、絶対水準は楽観的に出る。
+    live_test = [r for r in test if r["origin"] == "live"]
+    live_cur, _, n_live = _topk(live_test, lambda r: _score_with(r, cur_w, cur_c))
+    live_new, _, _ = _topk(live_test, lambda r: _score_with(r, bw, bc))
+
     comps = measure_components(rows)
     inverted = [k for k, v in comps.items() if v["inverted"] and v["n"] >= 50]
 
     improved = new_s - cur_s
     promote = improved > TOLERANCE
+    # バックフィル込みで改善していても、実運用(live)の日で悪化するなら採用しない。
+    # live の検証日が少なすぎる間は判定材料にならないので、この条件は掛けない。
+    if promote and n_live >= EVAL_K * 4 and live_new < live_cur:
+        promote = False
     version = f"w{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     metrics = {
         "test_success": round(new_s, 4), "test_danger": round(new_d, 4),
         "current_success": round(cur_s, 4), "current_danger": round(cur_d, 4),
         "improvement": round(improved, 4), "n_test": n_te,
+        "live_test_current": round(live_cur, 4), "live_test_new": round(live_new, 4),
+        "n_live_test": n_live,
+        "origins": {o: sum(1 for r in rows if r["origin"] == o)
+                    for o in sorted({r["origin"] for r in rows})},
         "components": comps, "inverted_components": inverted,
     }
 
