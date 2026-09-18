@@ -42,7 +42,20 @@ def track_all(asof: str | None = None) -> dict:
     # 既に判定確定済みのはず)。60暦日あれば十分な余裕を持ってカバーできるため、
     # 全2年分ではなくこの範囲だけ取得しNeonのデータ転送量を削減する。
     codes = sorted({p["code"] for p in preds})
-    hist_map = ingest.load_history_bulk(codes, lookback_days=60, as_of=asof)
+    # 通常は open 予測の run_date は最大でも20営業日前なので60暦日で足りる。
+    # ただしバックフィル(過去日付の予測)があると run_date が1年近く前になり、
+    # 60暦日では基準日が履歴に入らず、下のループで「prior.empty → continue」と
+    # 黙って飛ばされて永遠に判定されない(2026-09-18に実際に発生)。
+    # 最古の open 予測の日付から必要な期間を計算する。バックフィルが判定済みに
+    # なれば open から外れるので、以後は自動的に60暦日前後に戻る。
+    oldest = min((p["run_date"] for p in preds), default=asof)
+    try:
+        span = (datetime.strptime(asof, "%Y-%m-%d")
+                - datetime.strptime(oldest, "%Y-%m-%d")).days
+    except ValueError:
+        span = 0
+    lookback = max(60, span + 45)
+    hist_map = ingest.load_history_bulk(codes, lookback_days=lookback, as_of=asof)
     mat_map = materials.recent_material_scores_bulk(codes, asof)
     print(f"    [track] preloaded {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
 
