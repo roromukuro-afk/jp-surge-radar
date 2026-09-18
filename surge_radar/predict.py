@@ -144,7 +144,9 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
             on_progress(i, len(codes), len(scored))
 
     # ランキング: 除外(E/ゲート)を下げ、composite降順
-    scored.sort(key=lambda r: (r["category"] == "E", -r["score"]))
+    scored.sort(key=lambda r: (bool(r.get("gates")), -r["score"]))
+    # カテゴリはその日の順位から付け直す (ルール条件では成功率が分離しなかった)
+    scoring.assign_categories(scored)
 
     # スモークテスト (store=False): 本番予測を壊さず評価のみ
     if not store:
@@ -182,6 +184,9 @@ def generate(run_date: str | None = None, *, store_top: int = TOP_N_DEFAULT,
                  db.j({"gates": r["gates"], "themes": r["_themes"], "top_driver": r["top_driver"],
                        "upside": r["upside"], "market_score": market_score, "sub": r["sub"],
                        "classify_path": r.get("classify_path", ""),
+                       # 順位でカテゴリを付け直す前の、ルール条件による判定結果。
+                       # classify_path とセットで「なぜ拾われたか」の説明に使う。
+                       "rule_category": r.get("rule_category", ""),
                        # --- 材料の質 (件数でなく中身) ---
                        "material_quality": mat.get("material_quality", 0.0),
                        "top_material_type": mat.get("top_material_type", ""),

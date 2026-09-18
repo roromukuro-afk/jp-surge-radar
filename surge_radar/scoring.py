@@ -353,9 +353,53 @@ def _price_levels(f: dict) -> dict:
     }
 
 
+# カテゴリの順位境界 (その日の非ゲート候補内での順位)。
+# 2026-09-17に満期済み4,798件で実測した成功率に合わせた:
+#   1-5位 70.0% / 6-10位 40.0% / 11-20位 31.2% / 21-30位 28.1%
+#   / 31-50位 26.9% / 51-100位 14.6% / 101位以下 10.1%  [ベースライン14.8%]
+CATEGORY_RANKS = (("A", 5), ("B", 20), ("C", 50), ("D", 100))
+
+
+def assign_categories(scored: list[dict]) -> None:
+    """その日の候補全体の順位からカテゴリを付け直す(リストを直接書き換える)。
+
+    2026-09-17まではルール条件の組み合わせ(_classify)でカテゴリを決めていたが、
+    満期済み4,798件で測ると classify_path 別の成功率は件数30以上の6経路すべてが
+    8.6〜19.9%に収まり、ベースライン14.8%と区別できなかった。除外ゲートで弾いた
+    E_gate が15.2%で、B_ai_signal(14.9%)や B_ml_prob_ai(11.1%)より高いという
+    逆転まで起きていた。一方スコアの順位は 70.0%→10.1% と単調に7倍の差がつく。
+    ラベルの精度はスコアが担保し、「なぜこの銘柄か」の説明は classify_path と
+    reasons が担う、という分担にする。
+
+    ゲート該当銘柄は従来どおり E のまま順位から外す。ゲートには流動性不足
+    (MIN_AVG_TURNOVER未満)のように「実際に買えない」条件が含まれており、
+    成功率と相関しないことと、候補として出してよいことは別だから。
+    ルールベースの判定結果は flags.rule_category に残す。
+    """
+    ranked = [r for r in scored if not r.get("gates")]
+    ranked.sort(key=lambda r: -r["score"])
+    for r in scored:
+        r["rule_category"] = r.get("category", "")
+    for i, r in enumerate(ranked, 1):
+        for cat, limit in CATEGORY_RANKS:
+            if i <= limit:
+                r["category"] = cat
+                break
+        else:
+            r["category"] = "E"
+    for r in scored:
+        if r.get("gates"):
+            r["category"] = "E"
+
+
 def _classify(sub: dict, f: dict, gates: list[str], upside: float, composite: float,
              sim_thresholds: dict | None = None) -> tuple[str, str]:
-    """カテゴリと分類パス名(B/C条件追跡用)を返す。"""
+    """ルールベースのカテゴリと分類パス名を返す。
+
+    2026-09-17以降、表示されるカテゴリは assign_categories() が順位から付け直す。
+    ここで返すカテゴリは flags.rule_category として記録されるだけで、
+    classify_path のほうが本来の役割(どの条件で拾われたかの説明)になっている。
+    """
     if gates:
         return "E", "E_gate"
     st = sim_thresholds or {"strong": 0.68, "very_strong": 0.78}
