@@ -250,6 +250,30 @@ def themes_step(asof: str):
     return {"themes": len(reg)}
 
 
+def _calibration_step(asof: str):
+    """スコアリング層の重みを満期データから再較正する。
+
+    結果に inverted_components が含まれる場合、そのサブスコアは「上位より下位の
+    ほうが成功している」= 逆指標になっている。chart_score がこの状態で
+    何か月も放置されていたため、検出結果はログに必ず出す。
+    サマリには重み全体を入れず、採否と主要メトリクスだけ残す(ログを膨らませない)。
+    """
+    from . import calibration, scoring
+
+    res = calibration.calibrate(notes=f"daily {asof}")
+    if res.get("promoted"):
+        scoring.reset_active_weights()
+        print(f"    [calibration] 新しい重みを採用: {res['version']} "
+              f"検証 {res['current_success']:.3f} -> {res['test_success']:.3f}", flush=True)
+    inv = res.get("inverted_components") or []
+    if inv:
+        print(f"    [calibration] 逆指標の疑い: {inv} — 構成要素の符号を確認すること",
+              flush=True)
+    return {k: res.get(k) for k in
+            ("calibrated", "promoted", "version", "n_run_dates", "test_success",
+             "current_success", "improvement", "inverted_components", "reason")}
+
+
 def run_daily(*, limit: int | None = None, price_range: str = "2y",
               skip_materials: bool = False, retrain_if_needed: bool = True,
               price_pause: float = 0.25, material_pause: float = 0.3,
@@ -306,6 +330,12 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
         # 自律学習フィードバック: classify_path別のtrust_multiplierを最新judged結果で再計算。
         # predictの直前に置き、本日追加された判定も反映させる。承認ゲートなし(完全自律)。
         summary["learning"] = step("learning", learning.compute_path_performance)
+
+        # スコアリング層の自己較正。サブスコアの重みと composite 係数を満期データから
+        # 学習し直し、ホールドアウトで現行を上回ったときだけ昇格させる。
+        # モデルだけが学習してスコアリングの定数が手置きのままだと、chart_score が
+        # 逆指標のまま何か月も動き続けるような事故に気づけない(2026-09-17に実際に発生)。
+        summary["calibration"] = step("calibration", _calibration_step, asof)
 
         # --- CRITICAL: predict must succeed ---
         # limit はスモークテスト時に predict も先頭 limit 件に制限する

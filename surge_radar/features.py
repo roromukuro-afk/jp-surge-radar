@@ -28,11 +28,25 @@ FEATURE_KEYS = [
     # 材料
     "material_raw", "pos_impact", "neg_impact", "has_fresh_material",
     "dilution_flag", "going_concern_flag", "n_materials",
-    # テーマ/地合い
-    "theme_tailwind", "market_score",
+    # テーマ
+    "theme_tailwind",
     # 価格水準/流動性
     "price_level_norm", "liquidity_ok",
+    # 値幅適性
+    "daily_range_20",
 ]
+
+# 2026-09-17: market_score を FEATURE_KEYS から外した。
+# run_date ごとに全銘柄で同一の値(実測: 9/1は全銘柄0.276、9/2は全銘柄0.315)
+# なので、同じ日の銘柄同士を比較するときに一切の区別を生まない。それにも
+# 関わらずモデルの特徴量重要度の38.7%を占めており、学習容量の4割が
+# 「どの日が上がりやすいか」に使われて「どの銘柄が上がるか」に使われて
+# いなかった。ランキングは日単位で作るため、この学習は順位付けに寄与しない。
+# 地合いはスコアリング側(themes/realistic_upside)で引き続き参照する。
+#
+# 入れ替わりに daily_range_20(直近20本の日中値幅平均)を追加した。満期4,798件の
+# 実測で <2%:1.9% → 6%超:45.5% と単独で最強の予測力を持つ。
+# theme_tailwind は銘柄ごとに異なる(その銘柄のテーマが追い風かどうか)ため残す。
 
 
 def build_features(df: pd.DataFrame, idx: int | None = None, *,

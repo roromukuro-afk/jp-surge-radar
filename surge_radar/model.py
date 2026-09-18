@@ -438,7 +438,23 @@ class Predictor:
 
     @property
     def ready(self) -> bool:
-        return self.bundle is not None
+        if self.bundle is None:
+            return False
+        # FEATURE_KEYS を増減した直後は、保存済みバンドルの scaler が古い次元で
+        # fit されているため predict_proba が例外を投げる。日次パイプラインは
+        # train → predict の順に走るが、train.retrain() は新規サンプルが
+        # min_new_samples 未満だとスキップするので、古いバンドルのまま predict に
+        # 到達しうる。その場合はモデル無し(ルールのみ)に縮退させる。
+        try:
+            n_expected = int(self.bundle["scaler"].n_features_in_)
+        except Exception:
+            return True
+        if n_expected != len(FEATURE_KEYS):
+            print(f"    [model] feature 次元不一致 (bundle={n_expected}, "
+                  f"現在={len(FEATURE_KEYS)}) — 再学習までルールのみで動作", flush=True)
+            self.bundle = None
+            return False
+        return True
 
     @property
     def sim_thresholds(self) -> dict:

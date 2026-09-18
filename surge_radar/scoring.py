@@ -42,6 +42,42 @@ WEIGHTS = {
     "material": 0.00,
 }
 
+# composite の係数。WEIGHTS と同様 calibration が上書きしうる。
+COMPOSITE_COEFFS = {"weighted": 0.62, "prob": 0.10, "top": 0.18, "upside": 0.10}
+
+
+_ACTIVE_CACHE: tuple[dict, dict] | None = None
+
+
+def active_weights() -> tuple[dict, dict]:
+    """採用中の重みと係数を返す。
+
+    calibration.calibrate() が満期データから再学習し、ホールドアウトで現行を
+    上回ったときだけ scoring_weights テーブルに昇格させる。未較正(テーブルが
+    無い/昇格版が無い)なら上のデフォルトを使う。
+    ここを経由することで、手で置いた定数が実績で置き換わっていく。
+
+    predict は3000銘柄で score_candidate を回すため、プロセス内でキャッシュする。
+    較正直後に読み直したい場合は reset_active_weights() を呼ぶ。
+    """
+    global _ACTIVE_CACHE
+    if _ACTIVE_CACHE is not None:
+        return _ACTIVE_CACHE
+    from . import calibration
+    cur = calibration.current()
+    w, c = dict(WEIGHTS), dict(COMPOSITE_COEFFS)
+    if cur:
+        w.update({k: float(v) for k, v in (cur.get("weights") or {}).items()})
+        c.update({k: float(v) for k, v in (cur.get("coeffs") or {}).items()})
+    _ACTIVE_CACHE = (w, c)
+    return _ACTIVE_CACHE
+
+
+def reset_active_weights() -> None:
+    """キャッシュを破棄する(較正直後・テスト用)。"""
+    global _ACTIVE_CACHE
+    _ACTIVE_CACHE = None
+
 
 def _clip01(x: float) -> float:
     return max(0.0, min(1.0, x))
@@ -261,7 +297,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     # 絶対値のまま使うと成功類似度と相関0.92で実質同じものを二重評価してしまう。
     dsim = max(0.0, dsim_raw - sim_val)
 
-    weighted = sum(WEIGHTS[k] * sub[k] for k in WEIGHTS)
+    w_active, c_active = active_weights()
+    weighted = sum(w_active.get(k, 0.0) * sub.get(k, 0.0) for k in w_active)
     top = max(sub["material"], sub["chart"], sub["volume"], sub["theme"], sub["similarity"])  # 火種
     prob = float(ml_prob) if ml_prob is not None else weighted
     sub["probability"] = round(prob, 4)  # _classify で高確率判定に使用
@@ -275,7 +312,8 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     # リスクだけが増えていた。top(火種)を削ると検証top20が35.0→36.9%と僅かに
     # 上がるが top10 は同値で、材料の価値を測れるようになった時に効く可能性が
     # あるため残している。
-    composite = (0.62 * weighted + 0.10 * prob + 0.18 * top + 0.10 * upside)
+    composite = (c_active["weighted"] * weighted + c_active["prob"] * prob
+                 + c_active["top"] * top + c_active["upside"] * upside)
 
     # リスク減衰
     risk = 0.0
