@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS teacher_samples (
     UNIQUE (code, t0_date)
 );
 CREATE INDEX IF NOT EXISTS idx_teacher_source ON teacher_samples(source);
+CREATE INDEX IF NOT EXISTS idx_teacher_prediction ON teacher_samples(prediction_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_teacher_code_date ON teacher_samples(code, t0_date);
 
 CREATE TABLE IF NOT EXISTS model_meta (
@@ -362,6 +363,7 @@ CREATE TABLE IF NOT EXISTS teacher_samples (
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_teacher_source ON teacher_samples(source);
+CREATE INDEX IF NOT EXISTS idx_teacher_prediction ON teacher_samples(prediction_id);
 
 CREATE TABLE IF NOT EXISTS deep_analysis (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -549,7 +551,9 @@ class _PGConn:
     def executemany(self, sql: str, rows: Iterable[tuple]) -> None:
         import psycopg2.extras
         adapted, _ = _adapt_pg(sql)
-        psycopg2.extras.execute_batch(self._cur, adapted, list(rows))
+        rows = list(rows)
+        # 既定の page_size=100 だと500行で5往復になる。Neon は1往復が重いのでまとめて送る。
+        psycopg2.extras.execute_batch(self._cur, adapted, rows, page_size=500)
 
     def commit(self) -> None:
         self._conn.commit()

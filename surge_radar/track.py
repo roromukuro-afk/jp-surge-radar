@@ -15,6 +15,26 @@ from .config import JUDGE_WINDOW
 from .db import loadj
 
 
+# 1トランザクション(=Neon往復のまとまり)あたりの行数
+WRITE_CHUNK = 500
+
+OUTCOME_SQL = (
+    """INSERT INTO prediction_outcomes
+       (prediction_id,judged_date,bars_tracked,max_up_5d,max_up_10d,max_up_20d,
+        days_to_20pct,max_drawdown,close_up_maintained,faded_after_high,
+        material_continued,volume_continued,result_class,failure_tags,notes,next_learning)
+       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+       ON CONFLICT(prediction_id) DO UPDATE SET
+         judged_date=excluded.judged_date,bars_tracked=excluded.bars_tracked,
+         max_up_5d=excluded.max_up_5d,max_up_10d=excluded.max_up_10d,
+         max_up_20d=excluded.max_up_20d,days_to_20pct=excluded.days_to_20pct,
+         max_drawdown=excluded.max_drawdown,close_up_maintained=excluded.close_up_maintained,
+         faded_after_high=excluded.faded_after_high,material_continued=excluded.material_continued,
+         volume_continued=excluded.volume_continued,result_class=excluded.result_class,
+         failure_tags=excluded.failure_tags,next_learning=excluded.next_learning,
+         updated_at=CURRENT_TIMESTAMP""")
+
+
 def _bars_since(df, t0_date: str) -> int:
     after = df[df["date"] > t0_date]
     return len(after)
@@ -59,25 +79,8 @@ def track_all(asof: str | None = None) -> dict:
     mat_map = materials.recent_material_scores_bulk(codes, asof)
     print(f"    [track] preloaded {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
 
-    outcome_rows = []      # prediction_outcomes への upsert をまとめて実行
-    finalized_ids = []     # status='judged' に更新する id
-    teacher_args = []      # _add_teacher 用 (pred, feats, label, fail_tags, result)
-
-    OUTCOME_SQL = (
-        """INSERT INTO prediction_outcomes
-           (prediction_id,judged_date,bars_tracked,max_up_5d,max_up_10d,max_up_20d,
-            days_to_20pct,max_drawdown,close_up_maintained,faded_after_high,
-            material_continued,volume_continued,result_class,failure_tags,notes,next_learning)
-           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-           ON CONFLICT(prediction_id) DO UPDATE SET
-             judged_date=excluded.judged_date,bars_tracked=excluded.bars_tracked,
-             max_up_5d=excluded.max_up_5d,max_up_10d=excluded.max_up_10d,
-             max_up_20d=excluded.max_up_20d,days_to_20pct=excluded.days_to_20pct,
-             max_drawdown=excluded.max_drawdown,close_up_maintained=excluded.close_up_maintained,
-             faded_after_high=excluded.faded_after_high,material_continued=excluded.material_continued,
-             volume_continued=excluded.volume_continued,result_class=excluded.result_class,
-             failure_tags=excluded.failure_tags,next_learning=excluded.next_learning,
-             updated_at=CURRENT_TIMESTAMP""")
+    open_outcome_rows = []  # 追跡継続中 (open のまま) の prediction_outcomes upsert
+    finalized = []          # 確定する予測: (outcome_row, teacher_row | None)
 
     for p in preds:
         df = hist_map.get(p["code"])
@@ -112,26 +115,27 @@ def track_all(asof: str | None = None) -> dict:
         fail_tags = sorted(set(fail_tags))
         next_learning = _next_learning(result, fail_tags)
 
-        outcome_rows.append(
-            (p["id"], asof, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
-             oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
-             material_continued, volume_continued, result, db.j(fail_tags), "", next_learning))
+        outcome_row = (
+            p["id"], asof, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
+            oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
+            material_continued, volume_continued, result, db.j(fail_tags), "", next_learning)
         updated += 1
 
         # 20営業日追跡完了 or 既に+20%到達 → 確定 (status='judged' 表示用)
         finalize = (oc["bars_tracked"] >= JUDGE_WINDOW) or (oc["days_to_20pct"] is not None)
-        if finalize:
-            label = labeling.is_success(oc)
-            finalized_ids.append(p["id"])
-            judged += 1
-            if label:
-                live_success += 1
-                if result in success_sab:
-                    success_sab[result] += 1
-            else:
-                live_fail += 1
-                if result == "danger_fail":
-                    danger_fail += 1
+        if not finalize:
+            open_outcome_rows.append(outcome_row)
+            continue
+        label = labeling.is_success(oc)
+        judged += 1
+        if label:
+            live_success += 1
+            if result in success_sab:
+                success_sab[result] += 1
+        else:
+            live_fail += 1
+            if result == "danger_fail":
+                danger_fail += 1
 
         # 教師データ追加は20営業日フル満了時のみ (2026-09-07判明: 早期成功だけ
         # finalize条件でここまで到達すると、直近1か月弱のteacher_samplesが
@@ -142,51 +146,69 @@ def track_all(asof: str | None = None) -> dict:
         # label=1のみ計300件超)。成功/失敗を同じ成熟条件で捉えないと
         # クラス比率が歪むため、教師データ追加はbars_tracked>=JUDGE_WINDOW
         # のみに限定する(早期成功の status='judged' 表示自体は変えない)。
+        teacher_row = None
         if oc["bars_tracked"] >= JUDGE_WINDOW:
-            label = labeling.is_success(oc)
-            teacher_args.append((p, feats, label, fail_tags, result))
+            teacher_row = _teacher_row(p, feats, label, fail_tags, result)
+        finalized.append((outcome_row, teacher_row))
 
     # まとめて書き込み
-    if outcome_rows:
-        for i in range(0, len(outcome_rows), 500):
-            db.executemany(OUTCOME_SQL, outcome_rows[i:i + 500])
-    for args in teacher_args:
-        _add_teacher(*args)
-    if finalized_ids:
-        with db.cursor() as conn:
-            for i in range(0, len(finalized_ids), 500):
-                chunk = finalized_ids[i:i + 500]
-                ph = ",".join("%s" for _ in chunk)
-                conn.execute(f"UPDATE predictions SET status='judged' WHERE id IN ({ph})", chunk)
+    for i in range(0, len(open_outcome_rows), WRITE_CHUNK):
+        db.executemany(OUTCOME_SQL, open_outcome_rows[i:i + WRITE_CHUNK])
+    # 確定分は「結果・教師データ・status='judged'」をチャンクごとに1トランザクションで
+    # コミットする。2026-09-18: バックフィルで open が6.7万件に増え、旧実装は教師データを
+    # 1件ずつ (SELECT→INSERT→COMMIT の往復) 入れていたため track が180分の
+    # タイムアウトまで終わらず、status 更新が最後にまとめて行われる構造だったので
+    # 進捗が全て捨てられ、翌日も同じ所で詰まって predict に到達しなかった。
+    # チャンク単位で確定させれば途中で打ち切られても次回は残りから再開できる。
+    # 教師データと status を同じトランザクションに入れるのは、status だけ先に
+    # judged になると open から外れて教師データが二度と追加されなくなるため。
+    for i in range(0, len(finalized), WRITE_CHUNK):
+        chunk = finalized[i:i + WRITE_CHUNK]
+        _commit_finalized([o for o, _ in chunk], [t for _, t in chunk if t is not None])
+        if len(finalized) > WRITE_CHUNK:
+            print(f"    [track] finalized {min(i + WRITE_CHUNK, len(finalized))}/{len(finalized)}",
+                  flush=True)
 
     return {"asof": asof, "open_evaluated": len(preds), "updated": updated,
             "judged": judged, "live_fail": live_fail, "live_success": live_success,
             "danger_fail": danger_fail, "success_sab": success_sab}
 
 
-def _add_teacher(pred, feats: dict, label: int, fail_tags: list[str], result: str) -> None:
+TEACHER_SQL = (
+    # teacher_samples は (code, t0_date) に一意制約がある。seed-teacher が作った
+    # historical_pos/neg は過去日付を広くカバーしているため、バックフィル予測は
+    # 同じ (銘柄, 日付) で衝突しうる (2026-09-18 に UniqueViolation で停止)。
+    # 衝突したら既存を残す — 同じ1点を2件入れるとその点だけ二重に学習されるため。
+    "INSERT INTO teacher_samples(source,code,t0_date,label,features,tags,prediction_id)"
+    " VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (code, t0_date) DO NOTHING")
+
+
+def _teacher_row(pred, feats: dict, label: int, fail_tags: list[str], result: str):
     if not feats:
-        return
+        return None
     source = "live_success" if label else "live_fail"
+    return (source, pred["code"], pred["run_date"], label,
+            db.j(feats), db.j({"failure_tags": fail_tags, "result": result}), pred["id"])
+
+
+def _commit_finalized(outcome_rows: list[tuple], teacher_rows: list[tuple]) -> None:
+    """確定分1チャンクを1トランザクションで書く (結果 upsert → 教師データ → judged)。"""
+    ids = [r[0] for r in outcome_rows]
     with db.cursor() as conn:
-        # 重複防止
-        exists = conn.execute(
-            "SELECT 1 FROM teacher_samples WHERE prediction_id=%s", (pred["id"],)).fetchone()
-        if exists:
-            return
-        # teacher_samples は (code, t0_date) に一意制約がある。seed-teacher が作った
-        # historical_pos/neg は過去日付を広くカバーしているため、バックフィル予測は
-        # 同じ (銘柄, 日付) で衝突しうる。prediction_id の確認だけでは防げず、
-        # 2026-09-18 に UniqueViolation で track_all が途中停止した。その時点で
-        # status='judged' の更新に到達しないため、次回も同じ予測を処理して同じ所で
-        # 落ち続け、live 予測の判定まで止まる。衝突したら既存を残す — 同じ1点を
-        # 2件入れるとその点だけ二重に学習されるため。
-        conn.execute(
-            "INSERT INTO teacher_samples(source,code,t0_date,label,features,tags,prediction_id)"
-            " VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (code, t0_date) DO NOTHING",
-            (source, pred["code"], pred["run_date"], label,
-             db.j(feats), db.j({"failure_tags": fail_tags, "result": result}), pred["id"]),
-        )
+        conn.executemany(OUTCOME_SQL, outcome_rows)
+        if teacher_rows:
+            # 重複防止: 既に同じ予測から作った教師データがあれば入れない。
+            # 1件ずつ問い合わせず、チャンク分の id をまとめて1回で引く。
+            tids = [r[6] for r in teacher_rows]
+            ph = ",".join("%s" for _ in tids)
+            have = {r["prediction_id"] for r in conn.execute(
+                f"SELECT prediction_id FROM teacher_samples WHERE prediction_id IN ({ph})",
+                tids).fetchall()}
+            new_rows = [r for r in teacher_rows if r[6] not in have]
+            if new_rows:
+                conn.executemany(TEACHER_SQL, new_rows)
+        ph = ",".join("%s" for _ in ids)
+        conn.execute(f"UPDATE predictions SET status='judged' WHERE id IN ({ph})", ids)
 
 
 def _next_learning(result: str, tags: list[str]) -> str:
