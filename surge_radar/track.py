@@ -5,6 +5,7 @@
 - open な予測について、T0以降の値動きから 5/10/20営業日の成否を判定。
 - +20%到達でS/A/B、未達はnear/fail/danger_fail。失敗は具体的タグ付け。
 - 20営業日分の追跡が完了したら status=judged にし、live_fail/live_success 教師データを追加。
+- +20%到達で早期に judged にした予測も、20営業日そろった時点で教師データを追加する。
 """
 from __future__ import annotations
 
@@ -44,6 +45,18 @@ def track_all(asof: str | None = None) -> dict:
     asof = asof or datetime.now().strftime("%Y-%m-%d")
     with db.cursor() as conn:
         preds = conn.execute("SELECT * FROM predictions WHERE status='open'").fetchall()
+        # +20%到達で早期に judged になった予測は、その時点では教師データを作らない
+        # (下の「教師データ追加は20営業日フル満了時のみ」参照)。open から外れるので
+        # 放置すると永遠に教師データにならず、日々の追跡で増えるのは live_fail だけ
+        # になる (2026-09-19 Neon実測: live由来は label=1 が81件 / label=0 が4335件、
+        # 教師データ未作成の早期成功が912件)。結果行の bars_tracked が JUDGE_WINDOW
+        # 未満のまま judged になっているもの (=早期成功) を満期待ちとして再評価する。
+        # 満期時に結果行を20営業日分で上書きするので、教師データが衝突/特徴量なしで
+        # 入らなくても次回以降この一覧から外れる。
+        maturing = conn.execute(
+            "SELECT p.*, o.judged_date AS early_judged_date FROM predictions p"
+            " JOIN prediction_outcomes o ON o.prediction_id=p.id"
+            " WHERE p.status='judged' AND o.bars_tracked < %s", (JUDGE_WINDOW,)).fetchall()
         priced = {r["code"] for r in
                   conn.execute("SELECT DISTINCT code FROM prices").fetchall()}
 
@@ -51,9 +64,12 @@ def track_all(asof: str | None = None) -> dict:
     # (bootstrap で価格取得後に評価される)。無駄な往復を避ける。
     skipped_no_price = sum(1 for p in preds if p["code"] not in priced)
     preds = [p for p in preds if p["code"] in priced]
-    print(f"    [track] {len(preds)} open with prices, {skipped_no_price} skipped (no price)", flush=True)
+    maturing = [p for p in maturing if p["code"] in priced]
+    print(f"    [track] {len(preds)} open with prices, {skipped_no_price} skipped (no price),"
+          f" {len(maturing)} early-judged awaiting {JUDGE_WINDOW} bars", flush=True)
 
     judged = 0; updated = 0; live_fail = 0; live_success = 0; danger_fail = 0
+    matured = 0; matured_success = 0
     success_sab = {"S": 0, "A": 0, "B": 0}
     market_now = themes.market_regime(asof).get("score", 0.0)
 
@@ -61,14 +77,14 @@ def track_all(asof: str | None = None) -> dict:
     # open予測のrun_dateは最大でもJUDGE_WINDOW(20営業日)前まで(それより古いものは
     # 既に判定確定済みのはず)。60暦日あれば十分な余裕を持ってカバーできるため、
     # 全2年分ではなくこの範囲だけ取得しNeonのデータ転送量を削減する。
-    codes = sorted({p["code"] for p in preds})
+    codes = sorted({p["code"] for p in preds} | {p["code"] for p in maturing})
     # 通常は open 予測の run_date は最大でも20営業日前なので60暦日で足りる。
     # ただしバックフィル(過去日付の予測)があると run_date が1年近く前になり、
     # 60暦日では基準日が履歴に入らず、下のループで「prior.empty → continue」と
     # 黙って飛ばされて永遠に判定されない(2026-09-18に実際に発生)。
     # 最古の open 予測の日付から必要な期間を計算する。バックフィルが判定済みに
     # なれば open から外れるので、以後は自動的に60暦日前後に戻る。
-    oldest = min((p["run_date"] for p in preds), default=asof)
+    oldest = min((p["run_date"] for p in [*preds, *maturing]), default=asof)
     try:
         span = (datetime.strptime(asof, "%Y-%m-%d")
                 - datetime.strptime(oldest, "%Y-%m-%d")).days
@@ -82,7 +98,8 @@ def track_all(asof: str | None = None) -> dict:
     open_outcome_rows = []  # 追跡継続中 (open のまま) の prediction_outcomes upsert
     finalized = []          # 確定する予測: (outcome_row, teacher_row | None)
 
-    for p in preds:
+    work = [(p, False) for p in preds] + [(p, True) for p in maturing]
+    for p, early_judged in work:
         df = hist_map.get(p["code"])
         if df is None or df.empty:
             continue
@@ -98,6 +115,9 @@ def track_all(asof: str | None = None) -> dict:
 
         oc = labeling.forward_outcome(df, idx)
         if oc is None:
+            continue
+        # 早期 judged は満期まで何も書かない (表示は早期判定時のまま)
+        if early_judged and oc["bars_tracked"] < JUDGE_WINDOW:
             continue
 
         result, base_tags = labeling.classify_result(oc)
@@ -115,8 +135,10 @@ def track_all(asof: str | None = None) -> dict:
         fail_tags = sorted(set(fail_tags))
         next_learning = _next_learning(result, fail_tags)
 
+        # 早期 judged の満期処理では judged_date を早期判定日のまま残す
+        judged_date = p["early_judged_date"] if early_judged else asof
         outcome_row = (
-            p["id"], asof, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
+            p["id"], judged_date, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
             oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
             material_continued, volume_continued, result, db.j(fail_tags), "", next_learning)
         updated += 1
@@ -127,8 +149,11 @@ def track_all(asof: str | None = None) -> dict:
             open_outcome_rows.append(outcome_row)
             continue
         label = labeling.is_success(oc)
-        judged += 1
-        if label:
+        if early_judged:
+            # judged/live_success は早期判定時に数え済み。ここでは満期分だけ数える
+            matured += 1
+            matured_success += label
+        elif label:
             live_success += 1
             if result in success_sab:
                 success_sab[result] += 1
@@ -136,6 +161,8 @@ def track_all(asof: str | None = None) -> dict:
             live_fail += 1
             if result == "danger_fail":
                 danger_fail += 1
+        if not early_judged:
+            judged += 1
 
         # 教師データ追加は20営業日フル満了時のみ (2026-09-07判明: 早期成功だけ
         # finalize条件でここまで到達すると、直近1か月弱のteacher_samplesが
@@ -146,6 +173,7 @@ def track_all(asof: str | None = None) -> dict:
         # label=1のみ計300件超)。成功/失敗を同じ成熟条件で捉えないと
         # クラス比率が歪むため、教師データ追加はbars_tracked>=JUDGE_WINDOW
         # のみに限定する(早期成功の status='judged' 表示自体は変えない)。
+        # 早期成功は満期になった run で上の maturing から再評価され、ここで追加される。
         teacher_row = None
         if oc["bars_tracked"] >= JUDGE_WINDOW:
             teacher_row = _teacher_row(p, feats, label, fail_tags, result)
@@ -171,7 +199,8 @@ def track_all(asof: str | None = None) -> dict:
 
     return {"asof": asof, "open_evaluated": len(preds), "updated": updated,
             "judged": judged, "live_fail": live_fail, "live_success": live_success,
-            "danger_fail": danger_fail, "success_sab": success_sab}
+            "danger_fail": danger_fail, "success_sab": success_sab,
+            "matured": matured, "matured_success": matured_success}
 
 
 TEACHER_SQL = (
