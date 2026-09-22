@@ -250,6 +250,29 @@ def themes_step(asof: str):
     return {"themes": len(reg)}
 
 
+def _new_trading_day(asof: str) -> tuple[bool, str | None, str | None]:
+    """前回の予測以降に新しい取引日の株価が入ったかを返す。
+
+    定時実行は平日なら祝日でも動くため、休場が続くと同じ終値から予測が何度も
+    作られていた(2026-09 の連休: 9/19 の手動再実行と 9/21 の定時実行がどちらも
+    9/18 の終値ベース)。run_date が違うので教師データの (code, t0_date) 一意制約
+    にも掛からず、満期後に同じ銘柄・同じ日の値動きが日数ぶん重複して学習され、
+    較正でも同じ1日を複数日として数えてしまう。
+    比較するのは asof より前の最後の予測にする。同じ日の再実行(失敗後のやり直し)
+    はこれまでどおり上書きできる。
+    """
+    with db.cursor() as conn:
+        latest_px = conn.execute("SELECT MAX(date) d FROM prices").fetchone()["d"]
+        last_run = conn.execute(
+            "SELECT MAX(run_date) d FROM predictions WHERE origin='live' AND run_date < %s",
+            (asof,)).fetchone()["d"]
+        if not latest_px or not last_run:
+            return True, latest_px, None
+        basis = conn.execute(
+            "SELECT MAX(date) d FROM prices WHERE date <= %s", (last_run,)).fetchone()["d"]
+    return latest_px > (basis or ""), latest_px, basis
+
+
 def _calibration_step(asof: str):
     """スコアリング層の重みを満期データから再較正する。
 
@@ -339,9 +362,16 @@ def run_daily(*, limit: int | None = None, price_range: str = "2y",
 
         # --- CRITICAL: predict must succeed ---
         # limit はスモークテスト時に predict も先頭 limit 件に制限する
-        summary["predict"] = step_critical("predict", predict.generate, asof,
-                                           use_materials=not skip_materials, limit=limit,
-                                           store=predict_store)
+        new_day, latest_px, prev_basis = _new_trading_day(asof)
+        if predict_store and not new_day:
+            print(f"    [predict] skip: 最新の株価日 {latest_px} は前回予測の基準日 "
+                  f"{prev_basis} から進んでいない(休場日)", flush=True)
+            summary["predict"] = {"skipped": True, "latest_price_date": latest_px,
+                                  "previous_basis_date": prev_basis}
+        else:
+            summary["predict"] = step_critical("predict", predict.generate, asof,
+                                               use_materials=not skip_materials, limit=limit,
+                                               store=predict_store)
 
         # top-code material enrichment: warning only
         # predict内で当日の値動き/出来高立ち上がり銘柄(momentum pool)は既に

@@ -116,6 +116,9 @@ def notify_pipeline_result(summary: dict, asof: str) -> list[dict]:
     if not is_configured():
         return [{"sent": 0, "reason": "VAPID not configured"}]
     pred = summary.get("predict") or {}
+    if pred.get("skipped"):
+        # 休場日で予測を作らなかった日。「更新完了 B候補0件」と送ると誤解を招く
+        return [{"sent": 0, "reason": "predict skipped (no new trading day)"}]
     cats = pred.get("categories") or {}
     a = cats.get("A", 0) or 0
     b = cats.get("B", 0) or 0
