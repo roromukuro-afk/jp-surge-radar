@@ -233,6 +233,34 @@ def chart_features(df: pd.DataFrame) -> dict:
     return out
 
 
+def unfilled_limit_up(df: pd.DataFrame) -> float:
+    """買いが約定しきらないまま高値で引けた日か (0/1)。
+
+    ストップ高に張り付くと買い注文が約定できずに板に残り、その需要が翌日以降へ
+    持ち越される。条件は「前日比+10%以上」「高値引け」「出来高が直近5日平均の
+    半分未満」の同時成立。出来高が細いことが要件なのが肝で、大商いで上げ切った
+    日とは意味が逆になる。
+
+    2026-09-25 実測 (2024-06以降・終値3000円以下・翌20営業日の高値が基準比+20%):
+      全体                       9.2% (n=1,435,303)
+      前日比+10%以上             39.1% (n=8,927)
+      +10%かつ高値引け           49.3% (n=3,522)
+      +10%かつ高値引けかつ薄商い 67.8% (n=425)   ← この関数が拾う条件
+      +10%かつ高値引けかつ大商い 46.7% (n=3,097)
+    出来高の条件だけで 46.7% → 67.8% と21ポイント動く。
+    """
+    if df is None or len(df) < 7:
+        return 0.0
+    d = df.tail(7)
+    last = d.iloc[-1]
+    prev_close = float(d.iloc[-2]["close"])
+    close, high, vol = float(last["close"]), float(last["high"]), float(last["volume"])
+    v5 = float(d["volume"].iloc[-6:-1].mean())
+    if prev_close <= 0 or high <= 0 or v5 <= 0:
+        return 0.0
+    return float(close >= prev_close * 1.10 and close >= high * 0.999 and vol < 0.5 * v5)
+
+
 def volume_features(df: pd.DataFrame) -> dict:
     """
     出来高分析。増減だけでなく「どの価格位置で増えたか」「初動か天井か」を数値化。

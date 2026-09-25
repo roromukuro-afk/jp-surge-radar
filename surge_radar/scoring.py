@@ -45,6 +45,10 @@ WEIGHTS = {
 # composite の係数。WEIGHTS と同様 calibration が上書きしうる。
 COMPOSITE_COEFFS = {"weighted": 0.62, "prob": 0.10, "top": 0.18, "upside": 0.10}
 
+# 買いが約定しきらない高値引けへの加点 (indicators.unfilled_limit_up)。
+# 2024-06以降の実測で、この条件の+20%到達率は67.8%(n=425)、全体は9.2%。
+UNFILLED_LIMIT_UP_BONUS = 0.20
+
 
 _ACTIVE_CACHE: tuple[dict, dict] | None = None
 
@@ -314,6 +318,15 @@ def score_candidate(f: dict, ml_prob: float | None = None,
     # あるため残している。
     composite = (c_active["weighted"] * weighted + c_active["prob"] * prob
                  + c_active["top"] * top + c_active["upside"] * upside)
+
+    # 買いが約定しきらない高値引け(indicators.unfilled_limit_up)への加点。
+    # サブスコアに混ぜず composite へ直接足すのは、条件が稀(予測の0.2%)で
+    # 出来高の向きが volume_score と正反対のため、重みを分け合うと打ち消し合うから。
+    # 2026-09-25: 満期68,687件(229日)で run_date を前半/後半に分けて検証。
+    #   加点なし 検証top5 41.0% / top10 37.1%
+    #   加点0.20 検証top5 44.0% / top10 39.1%  (学習側も同方向: 43.9→47.0 / 42.2→44.5)
+    # 0.30以上で頭打ちになるので、他の要素を潰さない 0.20 を採る。
+    composite += UNFILLED_LIMIT_UP_BONUS * f.get("unfilled_limit_up", 0.0)
 
     # リスク減衰
     risk = 0.0

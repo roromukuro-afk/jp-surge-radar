@@ -122,6 +122,10 @@ def build_features(df: pd.DataFrame, idx: int | None = None, *,
     # 価格水準(表示用メタ)。+20%閾値までの経路を具体的な価格で示すために使う。
     # FEATURE_KEYS に入れていないためモデル/類似度には影響しない
     # (生の価格は銘柄間でスケールが違い、特徴量としては意味を持たないため)。
+    # 買いが約定しきらない高値引け。scoring 側で加点するだけなので FEATURE_KEYS
+    # には入れない(モデルの入力ベクトル長を変えると学習済みバンドルが使えない)。
+    feats["unfilled_limit_up"] = indicators.unfilled_limit_up(sub)
+
     sz = indicators.supply_zone_features(sub)
     feats["_resistance_price"] = cf.get("_resistance_price", 0.0)
     feats["_support_price"] = cf.get("_support_price", 0.0)
