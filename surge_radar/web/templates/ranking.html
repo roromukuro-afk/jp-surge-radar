@@ -28,10 +28,10 @@
 <details class="card p-3 mb-3 text-xs" open>
   <summary class="cursor-pointer font-semibold text-slate-300 select-none flex items-center gap-2 mb-2">
     <span>📊 材料・システム状況</span>
-    {% if overview.last_pipeline %}
-      {% if overview.last_pipeline.status == 'ok' %}
+    {% if overview.last_prod_pipeline %}
+      {% if overview.last_prod_pipeline.status == 'ok' %}
       <span class="chip bg-good/20 text-good border border-good/30">Pipeline OK</span>
-      {% elif overview.last_pipeline.status == 'running' %}
+      {% elif overview.last_prod_pipeline.status == 'running' %}
       <span class="chip bg-warn/20 text-warn border border-warn/30">Pipeline 実行中</span>
       {% else %}
       <span class="chip bg-bad/20 text-bad border border-bad/30">Pipeline ERR</span>
@@ -101,11 +101,11 @@
   </div>
   {% endif %}
   <!-- 最終パイプライン実行 -->
-  {% if overview.last_pipeline %}
+  {% if overview.last_prod_pipeline %}
   <div class="mt-2 border-t border-line/50 pt-2 text-slate-500">
-    最終Pipeline実行: {{overview.last_pipeline.started_at or '—'}}
-    {% if overview.last_pipeline.status == 'error' %}
-    <span class="text-bad ml-2">エラー: {{(overview.last_pipeline.message or '')[:100]}}</span>
+    最終Pipeline実行: {{overview.last_prod_pipeline.started_at or '—'}}
+    {% if overview.last_prod_pipeline.status == 'error' %}
+    <span class="text-bad ml-2">エラー: {{(overview.last_prod_pipeline.message or '')[:100]}}</span>
     {% endif %}
   </div>
   {% endif %}

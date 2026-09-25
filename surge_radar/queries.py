@@ -317,6 +317,26 @@ def teacher_counts() -> dict:
     }
 
 
+def _latest_production_pipeline(conn) -> dict | None:
+    """直近の本番 daily_pipeline 実行を返す (dry-run スモークを除外)。"""
+    import json
+    rows = conn.execute(
+        "SELECT status, started_at, counts, message FROM job_logs "
+        "WHERE job='daily_pipeline' ORDER BY id DESC LIMIT 30").fetchall()
+    for r in rows:
+        counts = r["counts"]
+        if isinstance(counts, str):
+            try:
+                counts = json.loads(counts)
+            except ValueError:
+                counts = {}
+        predict = (counts or {}).get("predict") or {}
+        if predict.get("dry_run") is True:
+            continue
+        return dict(r)
+    return None
+
+
 def overview() -> dict:
     from datetime import datetime, timedelta
     cutoff_30d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -347,6 +367,15 @@ def overview() -> dict:
         last_pipeline = conn.execute(
             "SELECT status, started_at, counts, message FROM job_logs "
             "WHERE job='daily_pipeline' ORDER BY id DESC LIMIT 1").fetchone()
+        # 本番パイプラインの最新実行。push のたびに走る Validate ワークフローは
+        # 同じ job='daily_pipeline' で 5銘柄の dry-run (predict.store=False) を
+        # 本番Neonに記録するため、単純な ORDER BY id DESC LIMIT 1 ではスモークを
+        # 掴んでしまい、本番runの失敗を検知できない (2026-09-25 実測: 本番run
+        # id=1374 が dry-run id=1412 に隠されていた)。dry_run フラグは
+        # predict.py が store=False のときだけ付けるので、それで振り分ける。
+        # predict に到達せず落ちた本番runは predict キー自体が無く、
+        # dry 判定されないので取りこぼさない。
+        last_prod_pipeline = _latest_production_pipeline(conn)
         # 材料が取れている銘柄数 (今日)
         today_str = datetime.now().strftime("%Y-%m-%d")
         mat_codes_today = conn.execute(
@@ -368,4 +397,5 @@ def overview() -> dict:
         "latest_run_date": latest_rd["d"] if latest_rd else None,
         "cat_today": cat_today,
         "last_pipeline": dict(last_pipeline) if last_pipeline else None,
+        "last_prod_pipeline": last_prod_pipeline,
     }
