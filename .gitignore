@@ -16,3 +16,4 @@ data/logs/
 .pytest_cache/
 
 .vercel
+data/tmp/
