@@ -79,3 +79,19 @@ def window_status(pub: datetime | None, date: str, start: datetime, tn: datetime
     if date == s_date:
         return "time_unknown"
     return "background"
+
+
+OPEN_HHMM = (9, 0)  # 東証の寄り付き
+
+
+def save_deadline(base_date: str) -> datetime:
+    """候補を保存できる期限 = 基準日の翌営業日の寄り付き(9:00)。
+    これを過ぎると判定期間の値動きを見てから記録できてしまう。
+    翌営業日は「基準日の次の平日」とする(平日の祝日は判定できないが、その場合は期限が
+    実際より早くなるだけで、値動きを見てから保存する方向には外れない)。"""
+    y, m, d = (int(x) for x in base_date.split("-"))
+    day = datetime(y, m, d, *OPEN_HHMM, tzinfo=JST)
+    day += timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day

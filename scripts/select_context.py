@@ -21,7 +21,7 @@ from pathlib import Path
 import _boot  # noqa: F401
 
 from surge_radar import db
-from surge_radar.vocab import JST, timing, window_start, window_status
+from surge_radar.vocab import JST, save_deadline, timing, window_start, window_status
 
 TMP = Path(__file__).resolve().parent.parent / "data" / "tmp"
 EXCLUDE_DAYS = 10
@@ -151,6 +151,7 @@ def funnel(conn, bd: str) -> dict:
         "base_date": bd,
         "t_now": tn.isoformat(timespec="seconds"),
         "t_prev": tp.isoformat(timespec="seconds") if tp else None,
+        "save_deadline": save_deadline(bd).isoformat(timespec="minutes"),
         "material_window": {
             "rule": "基準日の終値の時刻 < 公開時刻 <= T_now(分析開始)。日付だけの見出しは基準日より後の日付なら新規、"
                     "基準日と同じ日なら終値の前か後か分からないので新規に数えない",
@@ -172,7 +173,9 @@ def funnel(conn, bd: str) -> dict:
     # 走査記録は funnel を作り直すたびに空から始める
     _scan_path(bd).write_text(json.dumps({"t_now": doc["t_now"], "pages_viewed": {}}), encoding="utf-8")
 
-    print(json.dumps({k: doc[k] for k in ("base_date", "t_now", "t_prev", "material_window",
+    if tn >= save_deadline(bd):
+        print(f"# 注意: 保存期限 {doc['save_deadline']}(翌営業日の寄り付き)を過ぎている。この基準日の候補は保存できない")
+    print(json.dumps({k: doc[k] for k in ("base_date", "t_now", "t_prev", "save_deadline", "material_window",
                                           "exclusion_range", "counts")}, ensure_ascii=False, indent=1))
     print(f"# 除外: {', '.join(e['code'] for e in excluded) or 'なし'}")
     new_codes = [x["code"] for x in scan if x["new_material_events"]]

@@ -13,12 +13,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import _boot  # noqa: F401
 
 from surge_radar import db
 from surge_radar.track import TARGET_RET
+from surge_radar.vocab import JST, save_deadline
 
 TMP = Path(__file__).resolve().parent.parent / "data" / "tmp"
 STATUSES = {"あり", "新規材料なし", "新規材料確認不能"}
@@ -36,6 +38,11 @@ def main() -> None:
     bd = doc["base_date"]
     cands = doc.get("candidates")
     report = Path(a.report).read_text(encoding="utf-8")
+
+    # 寄り付き後の保存は拒否する(判定期間の値動きを見てから記録できてしまうため)
+    deadline = save_deadline(bd)
+    if datetime.now(JST) >= deadline:
+        sys.exit(f"保存期限 {deadline:%Y-%m-%d %H:%M}(基準日の翌営業日の寄り付き)を過ぎた。保存しない")
 
     fpath = TMP / f"funnel_{bd}.json"
     if not fpath.exists():

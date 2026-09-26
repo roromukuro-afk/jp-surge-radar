@@ -143,3 +143,10 @@ def test_timing_axis():
     assert timing(at("2026-09-23T10:00:00"), days) == "非営業日"   # 平日の祝日(価格データのある期間内)
     assert timing(at("2026-09-26T10:00:00"), days) == "非営業日"   # 土曜
     assert timing(None, days) == "公開時刻不明"
+
+
+def test_save_deadline_is_next_weekday_open():
+    from datetime import datetime
+    from surge_radar.vocab import JST, save_deadline
+    assert save_deadline("2026-09-25") == datetime(2026, 9, 28, 9, 0, tzinfo=JST)   # 金 → 月 9:00
+    assert save_deadline("2026-09-28") == datetime(2026, 9, 29, 9, 0, tzinfo=JST)   # 月 → 火 9:00
