@@ -45,6 +45,15 @@ def main() -> None:
     excluded = {e["code"] for e in fun["excluded"]}
 
     errors = []
+    # 全銘柄を見たことの確認: 第 1 段階の表を全ページ読んでいること(ユーザー決定 2026-09-26)
+    spath = TMP / f"scan_{bd}.json"
+    scan = json.loads(spath.read_text(encoding="utf-8")) if spath.exists() else {}
+    if scan.get("t_now") != fun["t_now"]:
+        errors.append("第 1 段階の走査記録が今回の --funnel と対応していない。--funnel の後に全ページを読み直すこと")
+    else:
+        unread = [p for p in range(1, fun["counts"]["pages"] + 1) if str(p) not in scan["pages_viewed"]]
+        if unread:
+            errors.append(f"第 1 段階の表で読んでいないページがある: {unread}(select_context.py --page N)")
     if not isinstance(cands, list):
         errors.append("candidates はリスト(0 件なら [])")
         cands = []
@@ -69,7 +78,7 @@ def main() -> None:
             errors.append(f"{tag}: {bd} のスナップショットに無い(3000 円超・売買なし・コード誤り)")
             continue
         if code not in stage1:
-            errors.append(f"{tag}: 第 1 段階を通過していない")
+            errors.append(f"{tag}: 第 1 段階の走査対象に無い")
         for k in REQUIRED_TEXT:
             if not str(c.get(k) or "").strip():
                 errors.append(f"{tag}: {k} が空")
@@ -119,6 +128,7 @@ def main() -> None:
 
     funnel_rec = {k: fun[k] for k in ("material_window", "exclusion_range", "counts")}
     funnel_rec["stage2"] = doc.get("stage2")
+    funnel_rec["pages_viewed"] = scan.get("pages_viewed")
     with db.cursor() as conn:
         for c in cands:
             code = str(c["code"])
@@ -138,7 +148,7 @@ def main() -> None:
             """INSERT INTO selection_runs(base_date,procedure,pool_size,n_selected,notes,t_prev,t_now,
                                           funnel,exclusions,report)
                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (bd, doc.get("procedure", ""), fun["counts"]["stage1_passed"], len(cands),
+            (bd, doc.get("procedure", ""), fun["counts"]["stage1_scanned"], len(cands),
              doc.get("notes", ""), fun["t_prev"], fun["t_now"], db.j(funnel_rec),
              db.j(fun["excluded"]), report))
     print(json.dumps({"base_date": bd, "saved": len(cands), "t_now": fun["t_now"]}, ensure_ascii=False))

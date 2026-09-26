@@ -29,7 +29,8 @@
   </div>
   {% set cnt = sel.run.funnel.counts if sel.run.funnel else {} %}
   <p class="text-sm text-slate-400 mb-4">
-    3000円以下 {{cnt.le_3000_snapshot or '—'}}銘柄 → 第1段階 {{cnt.stage1_passed or '—'}}銘柄 → 候補 {{sel.candidates|length}}銘柄
+    {% set st2 = sel.run.funnel.stage2 if sel.run.funnel and sel.run.funnel.stage2 else {} %}
+    3000円以下 {{cnt.le_3000_snapshot or '—'}}銘柄を全件走査 → 詳しく見た {{st2.examined or '—'}}銘柄 → 候補 {{sel.candidates|length}}銘柄
     · <a href="/report?date={{date}}">この日のレポート</a>
   </p>
 

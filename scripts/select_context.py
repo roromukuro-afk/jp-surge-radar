@@ -1,8 +1,9 @@
 """
 候補選定のための情報を出す(procedures/select.md)。基準日より後の株価は一切出さない。
 
-  --funnel           T_now・T_prev・Material Window・直近 10 営業日の除外・第 1 段階の通過銘柄
-                     (data/tmp/funnel_<基準日>.json にも保存。save_candidates.py が読む)
+  --funnel           T_now・T_prev・Material Window・直近 10 営業日の除外・第 1 段階の走査対象(全銘柄)
+                     (data/tmp/funnel_<基準日>.json に保存。save_candidates.py が読む)
+  --page N           第 1 段階の表の N ページ目(約 300 銘柄ずつ)。読んだページを data/tmp/scan_<基準日>.json に記録
   --code 1234        1 銘柄の日足・特徴・ラベル・見出し(Window 内か)・材料イベント・時価総額
   --labels A,B       指定ラベルをすべて持つ銘柄の一覧
 
@@ -24,7 +25,7 @@ from surge_radar.vocab import JST, timing, window_start, window_status
 
 TMP = Path(__file__).resolve().parent.parent / "data" / "tmp"
 EXCLUDE_DAYS = 10
-ATR_MIN = 0.02
+PAGE_SIZE = 300
 COLS = ["close", "ret_1d", "ret_5d", "ret_20d", "vol_ratio20", "vol_trend", "dist_high_20",
         "atr14_pct", "turnover_avg20"]
 
@@ -100,14 +101,6 @@ def routes_for(L: set[str], f: dict, has_new_material: bool) -> list[str]:
     return r
 
 
-def fits_range(f: dict) -> bool:
-    """値幅適性の入口条件: ATR14/株価 >= 2%。+20% が「10 営業日の典型的な変動幅(ATR%×√10)」の
-    約 3.2 倍以内に収まる水準。新規材料のある銘柄(ルート M)はこの条件を問わない。
-    2026-09-26 に、全銘柄を読める件数に収めるために入れた入口条件(成否データへの当てはめではない)。"""
-    a = f.get("atr14_pct")
-    return a is not None and a >= ATR_MIN
-
-
 def _fmt(v, k):
     if v is None:
         return ""
@@ -118,7 +111,17 @@ def _fmt(v, k):
     return f"{v:.3f}"
 
 
+def _funnel_path(bd: str) -> Path:
+    return TMP / f"funnel_{bd}.json"
+
+
+def _scan_path(bd: str) -> Path:
+    return TMP / f"scan_{bd}.json"
+
+
 def funnel(conn, bd: str) -> dict:
+    """全銘柄(3000 円以下・直近 10 営業日の予測済みを除く)を第 1 段階の走査対象にする。
+    ルートは選別に使わず、各銘柄の目印として付ける(ユーザー決定 2026-09-26: 全銘柄を見る)。"""
     tn = datetime.now(JST)
     tp = t_prev(conn)
     start = window_start(bd)
@@ -126,32 +129,24 @@ def funnel(conn, bd: str) -> dict:
     recent = recent_predictions(conn, days, tn)
     newmat = new_material_codes(conn, start, tn)
     snaps = conn.execute(
-        """SELECT s.code, s.features, s.labels, c.name FROM snapshots s
-           LEFT JOIN securities c ON c.code = s.code WHERE s.date = %s ORDER BY s.code""",
+        """SELECT s.code, s.features, s.labels FROM snapshots s WHERE s.date = %s ORDER BY s.code""",
         (bd,)).fetchall()
     n_universe = conn.execute("SELECT COUNT(*) n FROM securities").fetchone()["n"]
     n_priced = conn.execute("SELECT COUNT(DISTINCT code) n FROM prices WHERE date=%s", (bd,)).fetchone()["n"]
 
-    passed, excluded = [], []
+    scan, excluded = [], []
     route_counts: dict[str, int] = {}
-    low_range = 0
     for s in snaps:
         if s["code"] in recent:
             excluded.append({"code": s["code"], "reason": f"直近{EXCLUDE_DAYS}営業日に予測済み",
                              "last_base_date": recent[s["code"]]})
             continue
-        L = set(s["labels"] or [])
-        rs = routes_for(L, s["features"], s["code"] in newmat)
-        if rs and "M" not in rs and not fits_range(s["features"]):
-            low_range += 1
-            continue
+        rs = routes_for(set(s["labels"] or []), s["features"], s["code"] in newmat)
         for x in rs:
             route_counts[x] = route_counts.get(x, 0) + 1
-        if rs:
-            passed.append({"code": s["code"], "name": s["name"], "routes": rs,
-                           "new_material_events": newmat.get(s["code"], []),
-                           "f": s["features"], "labels": s["labels"]})
+        scan.append({"code": s["code"], "routes": rs, "new_material_events": newmat.get(s["code"], [])})
 
+    n_pages = (len(scan) + PAGE_SIZE - 1) // PAGE_SIZE
     doc = {
         "base_date": bd,
         "t_now": tn.isoformat(timespec="seconds"),
@@ -166,29 +161,56 @@ def funnel(conn, bd: str) -> dict:
                             "since": ([d for d in days if d <= tn.strftime('%Y-%m-%d')][-EXCLUDE_DAYS:] or [None])[0]},
         "counts": {"universe_securities": n_universe, "priced_on_base_date": n_priced,
                    "le_3000_snapshot": len(snaps), "excluded_recent": len(excluded),
-                   "route_hit_but_atr_below_min": low_range, "atr_min": ATR_MIN,
-                   "stage1_passed": len(passed), "by_route": dict(sorted(route_counts.items()))},
+                   "stage1_scanned": len(scan), "pages": n_pages, "page_size": PAGE_SIZE,
+                   "by_route": dict(sorted(route_counts.items())),
+                   "no_route": sum(1 for x in scan if not x["routes"])},
         "excluded": excluded,
-        "stage1": [{"code": p["code"], "routes": p["routes"],
-                    "new_material_events": p["new_material_events"]} for p in passed],
+        "stage1": scan,
     }
     TMP.mkdir(parents=True, exist_ok=True)
-    (TMP / f"funnel_{bd}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    _funnel_path(bd).write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 走査記録は funnel を作り直すたびに空から始める
+    _scan_path(bd).write_text(json.dumps({"t_now": doc["t_now"], "pages_viewed": {}}), encoding="utf-8")
 
-    # 表示: 要約 + 通過銘柄の表
     print(json.dumps({k: doc[k] for k in ("base_date", "t_now", "t_prev", "material_window",
                                           "exclusion_range", "counts")}, ensure_ascii=False, indent=1))
     print(f"# 除外: {', '.join(e['code'] for e in excluded) or 'なし'}")
-    # 表は簡潔に(ラベル全体は --code で見る)。社名は半角に寄せて 12 文字まで
-    import unicodedata
-    cols = ["code", "name", "routes", "new_mat", *COLS]
-    print("\t".join(cols))
-    for p in passed:
-        name = unicodedata.normalize("NFKC", p["name"] or "")[:12]
-        row = [p["code"], name, "".join(p["routes"]), str(len(p["new_material_events"]))]
-        row += [_fmt(p["f"].get(k), k) for k in COLS]
-        print("\t".join(row))
+    new_codes = [x["code"] for x in scan if x["new_material_events"]]
+    print(f"# 新規材料のある銘柄({len(new_codes)}): {', '.join(new_codes) or 'なし'}")
+    print(f"# 全 {n_pages} ページ。`--page 1` から `--page {n_pages}` まで全部読むこと"
+          f"(読んでいないページがあると save_candidates.py が保存を拒否する)")
     return doc
+
+
+def page(conn, bd: str, n: int) -> None:
+    """第 1 段階の表の n ページ目(1 始まり)を出し、読んだことを記録する。"""
+    import unicodedata
+    fpath = _funnel_path(bd)
+    if not fpath.exists():
+        raise SystemExit("先に --funnel を実行すること")
+    fun = json.loads(fpath.read_text(encoding="utf-8"))
+    n_pages = fun["counts"]["pages"]
+    if not 1 <= n <= n_pages:
+        raise SystemExit(f"ページは 1〜{n_pages}")
+    rows = fun["stage1"][(n - 1) * PAGE_SIZE: n * PAGE_SIZE]
+    codes = [r["code"] for r in rows]
+    snaps = {s["code"]: s for s in conn.execute(
+        """SELECT s.code, s.features, c.name FROM snapshots s LEFT JOIN securities c ON c.code = s.code
+           WHERE s.date = %s AND s.code = ANY(%s)""", (bd, codes)).fetchall()}
+    cols = ["code", "name", "routes", "new_mat", *COLS]
+    print(f"# base_date={bd} page {n}/{n_pages}  ({len(rows)} 銘柄)")
+    print("\t".join(cols))
+    for r in rows:
+        s = snaps[r["code"]]
+        name = unicodedata.normalize("NFKC", s["name"] or "")[:12]
+        row = [r["code"], name, "".join(r["routes"]) or "-", str(len(r["new_material_events"]))]
+        row += [_fmt(s["features"].get(k), k) for k in COLS]
+        print("\t".join(row))
+    scan = json.loads(_scan_path(bd).read_text(encoding="utf-8"))
+    scan["pages_viewed"][str(n)] = datetime.now(JST).isoformat(timespec="seconds")
+    _scan_path(bd).write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
+    left = [p for p in range(1, n_pages + 1) if str(p) not in scan["pages_viewed"]]
+    print(f"# 未読のページ: {left or 'なし'}")
 
 
 # ---------------- 1 銘柄 ----------------
@@ -250,6 +272,7 @@ def main() -> None:
     ap.add_argument("--date")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--funnel", action="store_true")
+    g.add_argument("--page", type=int, help="第 1 段階の表の N ページ目(1 始まり)")
     g.add_argument("--labels")
     g.add_argument("--code")
     a = ap.parse_args()
@@ -257,6 +280,9 @@ def main() -> None:
         bd = base_date(conn, a.date)
         if a.funnel:
             funnel(conn, bd)
+            return
+        if a.page:
+            page(conn, bd, a.page)
             return
         if a.code:
             print(json.dumps(one(conn, bd, a.code), ensure_ascii=False, default=str))
