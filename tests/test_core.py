@@ -113,22 +113,23 @@ def test_split_adjustment_prevents_false_failure():
 
 
 def test_material_window():
+    """Window = 基準日の終値の時刻(15:30) < 公開時刻 <= 分析開始。終値より前の材料は P0 に織り込み済み。"""
     from datetime import datetime
-    from surge_radar.vocab import JST, window_status
-    tp = datetime(2026, 9, 28, 18, 5, tzinfo=JST)   # 前回の分析時刻
-    tn = datetime(2026, 9, 29, 18, 5, tzinfo=JST)   # 今回
-    at = lambda d, h, m: datetime.fromisoformat(f"{d}T{h:02d}:{m:02d}:00+09:00")
-    assert window_status(at("2026-09-28", 18, 10), "2026-09-28", tp, tn) == "new"
-    assert window_status(at("2026-09-28", 17, 0), "2026-09-28", tp, tn) == "background"
-    assert window_status(at("2026-09-29", 18, 30), "2026-09-29", tp, tn) == "after_t_now"
-    # 日付だけの見出し: T_prev より後の日なら新規、同じ日は時刻不明で新規に数えない
-    assert window_status(None, "2026-09-29", tp, tn) == "new"
-    assert window_status(None, "2026-09-28", tp, tn) == "time_unknown"
-    assert window_status(None, "2026-09-25", tp, tn) == "background"
-    # 前回分析日時不明: T_now と同じ日に公開されたものだけ暫定で新規
-    assert window_status(at("2026-09-29", 7, 0), "2026-09-29", None, tn) == "new"
-    assert window_status(at("2026-09-28", 23, 0), "2026-09-28", None, tn) == "background"
-    assert window_status(None, "2026-09-29", None, tn) == "new"
+    from surge_radar.vocab import JST, window_start, window_status
+    start = window_start("2026-09-25")                  # 金曜の大引け
+    assert start == datetime(2026, 9, 25, 15, 30, tzinfo=JST)
+    tn = datetime(2026, 9, 27, 10, 0, tzinfo=JST)       # 日曜 10:00 に分析開始
+    at = lambda s: datetime.fromisoformat(s + "+09:00")
+    assert window_status(at("2026-09-25T18:30:00"), "2026-09-25", start, tn) == "new"          # 金曜引け後の開示
+    assert window_status(at("2026-09-25T15:30:00"), "2026-09-25", start, tn) == "background"   # 大引けちょうどは含まない
+    assert window_status(at("2026-09-25T11:00:00"), "2026-09-25", start, tn) == "background"   # 場中 → P0 に織り込み済み
+    assert window_status(at("2026-09-26T09:00:00"), "2026-09-26", start, tn) == "new"          # 土曜
+    assert window_status(at("2026-09-27T10:05:00"), "2026-09-27", start, tn) == "after_t_now"  # 分析開始より後
+    # 日付しか分からない見出し
+    assert window_status(None, "2026-09-26", start, tn) == "new"
+    assert window_status(None, "2026-09-25", start, tn) == "time_unknown"   # 終値の前か後か分からない
+    assert window_status(None, "2026-09-24", start, tn) == "background"
+    assert window_status(None, "2026-09-28", start, tn) == "after_t_now"
 
 
 def test_timing_axis():

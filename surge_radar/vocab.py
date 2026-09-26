@@ -48,28 +48,34 @@ def timing(published_at: datetime | None, trading_days: set[str] | None = None) 
     return "引け後"
 
 
-def window_status(pub: datetime | None, date: str, tp: datetime | None, tn: datetime) -> str:
+CLOSE_HHMM = (15, 30)  # 東証の大引け(2024-11-05 以降)
+
+
+def window_start(base_date: str) -> datetime:
+    """Material Window の起点 = 基準日の終値の時刻(大引け)。P0 はこの時点の終値なので、
+    それより前に公開された材料はすでに P0 に織り込まれている。"""
+    y, m, d = (int(x) for x in base_date.split("-"))
+    return datetime(y, m, d, *CLOSE_HHMM, tzinfo=JST)
+
+
+def window_status(pub: datetime | None, date: str, start: datetime, tn: datetime) -> str:
     """見出し 1 件が Material Window 内か。new / background / time_unknown / after_t_now。
 
-    Material Window: T_prev < 公開時刻 <= T_now の見出しだけが新規材料。
-    T_prev が無い(前回分析日時不明)ときは、T_now と同じ日(JST)に公開されたものだけを暫定の新規材料とする。
-    日付しか分からない見出しは、T_prev の日付より後なら新規、同じ日なら time_unknown(新規に数えない)。
+    Material Window: 基準日の終値の時刻(start) < 公開時刻 <= 分析開始(T_now) の見出しだけが新規材料。
+    日付しか分からない見出しは、基準日より後の日付なら新規、基準日と同じ日なら終値の前か後か
+    分からないので time_unknown(新規に数えない)、それより前は背景。
     """
     tn_date = tn.strftime("%Y-%m-%d")
     if pub is not None:
         pub = pub.astimezone(JST)
         if pub > tn:
             return "after_t_now"
-        lo = tp if tp is not None else tn.replace(hour=0, minute=0, second=0, microsecond=0)
-        return "new" if pub > lo else "background"
-    # 日付しか分からない見出し
+        return "new" if pub > start else "background"
     if date > tn_date:
         return "after_t_now"
-    if tp is None:
-        return "new" if date == tn_date else "background"
-    tp_date = tp.strftime("%Y-%m-%d")
-    if date > tp_date:
+    s_date = start.strftime("%Y-%m-%d")
+    if date > s_date:
         return "new"
-    if date == tp_date:
+    if date == s_date:
         return "time_unknown"
     return "background"

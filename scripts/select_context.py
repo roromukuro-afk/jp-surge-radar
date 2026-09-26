@@ -7,7 +7,8 @@
   --labels A,B       指定ラベルをすべて持つ銘柄の一覧
 
 基準日は --date、省略時は最新のスナップショットの日付。
---t-prev はユーザーが前回分析日時を指定したときだけ使う(推測で入れない)。
+Material Window は「基準日の終値の時刻(15:30) < 公開時刻 <= 分析開始(T_now)」(ユーザー決定 2026-09-26)。
+T_prev(前回の正式な分析の時刻)は記録のために出すだけで、Window には使わない。
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from pathlib import Path
 import _boot  # noqa: F401
 
 from surge_radar import db
-from surge_radar.vocab import JST, timing, window_status
+from surge_radar.vocab import JST, timing, window_start, window_status
 
 TMP = Path(__file__).resolve().parent.parent / "data" / "tmp"
 EXCLUDE_DAYS = 10
@@ -40,9 +41,7 @@ def trading_days(conn) -> list[str]:
         "SELECT date FROM prices GROUP BY date HAVING COUNT(*) > 1000 ORDER BY date").fetchall()]
 
 
-def t_prev(conn, override: str | None) -> datetime | None:
-    if override:
-        return datetime.fromisoformat(override).astimezone(JST)
+def t_prev(conn) -> datetime | None:
     r = conn.execute("SELECT MAX(t_now) t FROM selection_runs").fetchone()
     return r["t"].astimezone(JST) if r and r["t"] else None
 
@@ -58,7 +57,7 @@ def recent_predictions(conn, days: list[str], tn: datetime) -> dict[str, str]:
     return {r["code"]: r["d"] for r in rows}
 
 
-def new_material_codes(conn, tp, tn) -> dict[str, list[int]]:
+def new_material_codes(conn, start, tn) -> dict[str, list[int]]:
     """Window 内の見出しから、主語になっている銘柄 -> 材料イベント id。"""
     rows = conn.execute(
         """SELECT n.code, n.date, n.published_at, e.id, e.subjects
@@ -66,7 +65,7 @@ def new_material_codes(conn, tp, tn) -> dict[str, list[int]]:
            WHERE n.code = ANY(e.subjects)""").fetchall()
     out: dict[str, set[int]] = {}
     for r in rows:
-        if window_status(r["published_at"], r["date"], tp, tn) == "new":
+        if window_status(r["published_at"], r["date"], start, tn) == "new":
             out.setdefault(r["code"], set()).add(r["id"])
     return {k: sorted(v) for k, v in out.items()}
 
@@ -119,12 +118,13 @@ def _fmt(v, k):
     return f"{v:.3f}"
 
 
-def funnel(conn, bd: str, tp_override: str | None) -> dict:
+def funnel(conn, bd: str) -> dict:
     tn = datetime.now(JST)
-    tp = t_prev(conn, tp_override)
+    tp = t_prev(conn)
+    start = window_start(bd)
     days = trading_days(conn)
     recent = recent_predictions(conn, days, tn)
-    newmat = new_material_codes(conn, tp, tn)
+    newmat = new_material_codes(conn, start, tn)
     snaps = conn.execute(
         """SELECT s.code, s.features, s.labels, c.name FROM snapshots s
            LEFT JOIN securities c ON c.code = s.code WHERE s.date = %s ORDER BY s.code""",
@@ -157,10 +157,9 @@ def funnel(conn, bd: str, tp_override: str | None) -> dict:
         "t_now": tn.isoformat(timespec="seconds"),
         "t_prev": tp.isoformat(timespec="seconds") if tp else None,
         "material_window": {
-            "rule": "T_prev < 公開時刻 <= T_now" if tp else
-                    "前回分析日時不明のため、T_now と同じ日(JST)に公開されたものだけを暫定の新規材料とする",
-            "from": tp.isoformat(timespec="seconds") if tp else
-                    tn.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds"),
+            "rule": "基準日の終値の時刻 < 公開時刻 <= T_now(分析開始)。日付だけの見出しは基準日より後の日付なら新規、"
+                    "基準日と同じ日なら終値の前か後か分からないので新規に数えない",
+            "from": start.isoformat(timespec="seconds"),
             "to": tn.isoformat(timespec="seconds"),
             "codes_with_new_material": len(newmat)},
         "exclusion_range": {"trading_days": EXCLUDE_DAYS,
@@ -194,10 +193,10 @@ def funnel(conn, bd: str, tp_override: str | None) -> dict:
 
 # ---------------- 1 銘柄 ----------------
 
-def one(conn, bd: str, code: str, tp_override: str | None) -> dict:
+def one(conn, bd: str, code: str) -> dict:
     from surge_radar.sources import yahoo
     tn = datetime.now(JST)
-    tp = t_prev(conn, tp_override)
+    start = window_start(bd)
     days = trading_days(conn)
     sec = conn.execute("SELECT name, market, sector33 FROM securities WHERE code=%s", (code,)).fetchone()
     snap = conn.execute("SELECT features, labels, label_version FROM snapshots WHERE date=%s AND code=%s",
@@ -225,7 +224,7 @@ def one(conn, bd: str, code: str, tp_override: str | None) -> dict:
                for e in events.get(n["title_key"], []) if code in (e["subjects"] or [])]
         out_news.append({
             "date": n["date"], "published_at": pub.isoformat(timespec="minutes") if pub else None,
-            "timing": timing(pub, tdset), "window": window_status(pub, n["date"], tp, tn),
+            "timing": timing(pub, tdset), "window": window_status(pub, n["date"], start, tn),
             "source": n["source"], "title": n["title"],
             "reviewed": n["n_events"] is not None,
             "is_subject": (code in (n["subjects"] or [])) if n["n_events"] is not None else None,
@@ -249,7 +248,6 @@ def one(conn, bd: str, code: str, tp_override: str | None) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date")
-    ap.add_argument("--t-prev", help="ユーザーが指定した前回分析日時(ISO 形式)。推測で入れない")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--funnel", action="store_true")
     g.add_argument("--labels")
@@ -258,10 +256,10 @@ def main() -> None:
     with db.cursor() as conn:
         bd = base_date(conn, a.date)
         if a.funnel:
-            funnel(conn, bd, a.t_prev)
+            funnel(conn, bd)
             return
         if a.code:
-            print(json.dumps(one(conn, bd, a.code, a.t_prev), ensure_ascii=False, default=str))
+            print(json.dumps(one(conn, bd, a.code), ensure_ascii=False, default=str))
             return
         want = a.labels.split(",")
         rows = conn.execute(
