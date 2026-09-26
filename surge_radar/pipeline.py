@@ -155,7 +155,7 @@ def collect_materials_step(codes: list[str], pause: float = 0.3, days: int = 14,
     disclosures_seen = 0
 
     # ---- TDnet範囲取得 ----
-    last = materials.last_materials_date()
+    last = materials.last_materials_date(source="tdnet")
     since_date = None
     if last and last >= today:
         with db.cursor() as conn:

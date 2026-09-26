@@ -28,7 +28,12 @@ from . import db
 
 TDNET_API = "https://webapi.yanoshin.jp/webapi/tdnet/list/{q}.json"
 TDNET_RANGE = "https://webapi.yanoshin.jp/webapi/tdnet/list/{f}-{t}.json"
-EDINET_API = "https://disclosure.edinet-fsa.go.jp/api/v2/documents.json"
+# 2026-09-26: disclosure.edinet-fsa.go.jp は disclosure2.edinet-fsa.go.jp へ
+# リダイレクトされる際に /api/v2 のパスが落ち、HTTP 200 で「規定外操作が
+# 行われました」というHTMLのエラー画面が返る。_get_json はJSONにできず None を
+# 返すため "fetch failed: no data" となり、2026-08-28 以降 EDINET は1件も
+# 取れていなかった(キー自体は有効)。API専用ホストを直接指定する。
+EDINET_API = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
 YAHOO_NEWS_API = "https://query2.finance.yahoo.com/v1/finance/search"  # 日本株では英語ニュースが返るため実質未使用
 
 # カテゴリ -> (株価インパクト基礎, 持続性基礎, 方向[+1/-1])
@@ -253,10 +258,25 @@ def fetch_tdnet(code: str, days: int = 30, limit: int = 50) -> list[dict]:
 
 # ---------- TDnet 日付範囲一括取得 ----------
 
-def last_materials_date() -> str | None:
-    """DB内の最新材料日付。差分取得の起点として使用。"""
+def last_materials_date(source: str | None = None) -> str | None:
+    """
+    DB内の最新材料日付。差分取得の起点として使用。
+
+    source を指定するとそのソースの行だけを見る。TDnet の差分取得で
+    source を省いて全ソースのMAXを見ていたため、yahoojp/nikkei が当日分を
+    書いた時点で「TDnet already current」と誤判定し、TDnet の取得が毎日
+    まるごとスキップされていた(2026-09-11 以降 tdnet の行が1件も増えず、
+    2026-09-25 の Actions ログに
+    `[materials] TDnet already current (last=2026-09-25)` が残っている)。
+    適時開示は最も信号の強い材料なので、ソース単位で判定する。
+    """
+    sql = "SELECT MAX(date) d FROM materials"
+    params: tuple = ()
+    if source:
+        sql += " WHERE source = %s"
+        params = (source,)
     with db.cursor() as conn:
-        r = conn.execute("SELECT MAX(date) d FROM materials").fetchone()
+        r = conn.execute(sql, params).fetchone()
     return r["d"] if r and r["d"] else None
 
 
