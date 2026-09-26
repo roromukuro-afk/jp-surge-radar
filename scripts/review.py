@@ -73,8 +73,9 @@ def load() -> list[dict]:
         feats |= {f"ルート:{x}" for x in (r["routes"] or [])}
         r["feats"] = feats
         r["unknown"] = unknown_labels(r["features"] or {})
-        r["result"] = ("success" if r["hit"] else "failure" if r["final"]
-                       else "unverified" if r["status"] == "unverified" else "tracking")
+        # 状態は track.py が決めたものをそのまま使う(判定未確認を失敗に数えない)
+        r["result"] = {"hit": "success", "miss": "failure", "unverified": "unverified"}.get(
+            r["status"], "tracking")
     return rows
 
 

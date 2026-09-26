@@ -1,7 +1,8 @@
 """
 日次のデータ処理(Claude の判断を含まない部分)。
 
-  1. 全銘柄の日足を取得
+  0. 営業日カレンダー(1306 の日足)を更新
+  1. 全銘柄の日足を取得。前回から営業日が空いていれば、空いた分もまとめて取る
   2. 基準日(日足が揃っている最新の営業日)のスナップショットを作る
   3. 全銘柄のニュース見出しを取得して保存
   4. 追跡中の候補の成否を更新
@@ -18,7 +19,7 @@ from datetime import datetime
 
 import _boot  # noqa: F401
 
-from surge_radar import db, ingest, news, snapshot, track, universe
+from surge_radar import db, ingest, market_calendar, news, snapshot, track, universe
 
 
 def _log_start(job: str) -> int:
@@ -65,9 +66,19 @@ def main() -> None:
             codes = codes[:a.limit]
         counts["universe"] = len(codes)
 
+        counts["calendar"] = market_calendar.refresh()
+
         if not a.skip_prices:
-            r = ingest.fetch_many(codes, range_="5d", workers=8)
+            # 前回保存した最新の営業日から今日までに何営業日あるかで取得範囲を決める。
+            # 実行しなかった日があっても、次の実行で空いた分を埋める(判定期間の株価を欠かさないため)
+            with db.cursor() as conn:
+                last = conn.execute("SELECT date FROM prices GROUP BY date HAVING COUNT(*) > 1000 "
+                                    "ORDER BY date DESC LIMIT 1").fetchone()["date"]
+            gap = len([d for d in market_calendar.days() if d > last])
+            rng = "5d" if gap <= 3 else "1mo" if gap <= 18 else "3mo"
+            r = ingest.fetch_many(codes, range_=rng, workers=8, since=last)
             counts["prices"] = {k: r[k] for k in ("ok", "fail", "rows")}
+            counts["prices"].update({"last_before": last, "missing_market_days": gap, "range": rng})
             print(f"[prices] {counts['prices']}  {time.monotonic()-t0:.0f}s", flush=True)
 
         bd = base_date()

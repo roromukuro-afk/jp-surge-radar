@@ -53,7 +53,9 @@
           <span class="ml-2 {{ 'text-good' if c.max_ret >= 0.2 else 'text-slate-400' }}">最高 {{'%+.1f'|format(c.max_ret*100)}}%</span>
           <span class="ml-1 text-slate-500">最安 {{'%+.1f'|format(c.min_ret*100)}}%</span>
         {% endif %}
+        {% if c.deadline %}<span class="ml-1 text-slate-500">判定期限 {{c.deadline}}</span>{% endif %}
         {% if c.split_note %}<span class="ml-1 text-warn">分割調整: {{c.split_note}}</span>{% endif %}
+        {% if c.status == 'unverified' and c.missing_dates %}<span class="ml-1 text-warn">株価なし: {{c.missing_dates|join(', ')}}</span>{% endif %}
       </div>
       <p class="mt-3 text-sm">{{c.thesis}}</p>
       <details class="mt-2 text-sm">

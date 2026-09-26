@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from . import db
-from .sources import jquants, yahoo
+from .sources import yahoo
 
 
 def upsert_prices(code: str, df: pd.DataFrame) -> int:
@@ -41,18 +41,30 @@ def _f(x):
         return None
 
 
-def fetch_one(code: str, range_: str = "2y") -> int:
-    """1銘柄を取得して保存。J-Quants優先(あれば)→Yahoo。返り値は保存行数。"""
-    df = pd.DataFrame()
-    if jquants.is_available():
-        df = jquants.fetch_ohlcv(code)
+def fetch_one(code: str, range_: str = "2y", since: str | None = None) -> int:
+    """1銘柄の日足を Yahoo から取得して保存する。返り値は保存行数。
+
+    since: この日以降の行だけ保存する(保存していない古い期間まで広げないため)。
+    取得範囲に株式分割があった銘柄は、保存済みの行と価格の基準が違ってしまうので、
+    3 か月分を取り直して、保存している最も古い日以降をまとめて分割後の基準で上書きする。
+    """
+    df = yahoo.fetch_ohlcv(code, range_=range_)
     if df.empty:
-        df = yahoo.fetch_ohlcv(code, range_=range_)
+        return 0
+    if df.attrs.get("splits"):
+        full = yahoo.fetch_ohlcv(code, range_="3mo")
+        if not full.empty:
+            with db.cursor() as conn:
+                first = conn.execute("SELECT MIN(date) d FROM prices").fetchone()["d"]
+            return upsert_prices(code, full[full["date"] >= first] if first else full)
+    if since:
+        df = df[df["date"] >= since]
     return upsert_prices(code, df)
 
 
 def fetch_many(codes: list[str], range_: str = "2y", pause: float = 0.25,
-               log_every: int = 100, on_progress=None, workers: int = 8) -> dict:
+               log_every: int = 100, on_progress=None, workers: int = 8,
+               since: str | None = None) -> dict:
     """複数銘柄を取得。I/Oバウンドなのでスレッド並列で取得する。
 
     yfinance は HTTP 取得が支配的なため、逐次だと数千銘柄で 1〜2時間かかり daily が
@@ -66,7 +78,7 @@ def fetch_many(codes: list[str], range_: str = "2y", pause: float = 0.25,
     if workers <= 1:
         for i, code in enumerate(codes, 1):
             try:
-                n = fetch_one(code, range_=range_)
+                n = fetch_one(code, range_=range_, since=since)
                 if n > 0:
                     ok += 1; total_rows += n
                 else:
@@ -82,7 +94,7 @@ def fetch_many(codes: list[str], range_: str = "2y", pause: float = 0.25,
 
     def _one(code: str):
         try:
-            return code, fetch_one(code, range_=range_), None
+            return code, fetch_one(code, range_=range_, since=since), None
         except Exception as e:  # noqa: BLE001
             return code, 0, e
 

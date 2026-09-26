@@ -10,7 +10,7 @@ SELECT c.id, c.base_date, c.code, s.name, s.market, c.base_close, c.target, c.th
        c.labels, c.procedure, c.routes, c.chart_patterns, c.material_status, c.material_analysis,
        c.teacher_match, c.post_surge_check, c.dilution, c.path, c.falsifiers, c.supply,
        o.bars_tracked, o.max_high, o.max_ret, o.min_ret, o.hit, o.hit_day, o.final, o.last_date,
-       o.status AS track_status, o.split_note
+       o.status AS track_status, o.split_note, o.deadline, o.missing_dates
 FROM candidates c
 LEFT JOIN securities s ON s.code = c.code
 LEFT JOIN outcomes o ON o.candidate_id = c.id
@@ -21,13 +21,7 @@ def _status(r: dict) -> str:
     # JPX の社名は全角英数字(例 "Ｖｅｒｉｔａｓ　Ｉｎ")なので表示用に半角へ寄せる
     if r.get("name"):
         r["name"] = unicodedata.normalize("NFKC", r["name"])
-    if r.get("hit"):
-        return "hit"
-    if r.get("track_status") == "unverified":
-        return "unverified"
-    if r.get("final"):
-        return "miss"
-    return "open"
+    return {"hit": "hit", "miss": "miss", "unverified": "unverified"}.get(r.get("track_status"), "open")
 
 
 def selection_dates() -> list[str]:

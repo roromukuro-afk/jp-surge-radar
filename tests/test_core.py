@@ -76,40 +76,61 @@ def test_candles_and_structure():
     assert "陽線2本連続" not in L and "陽線4本以上連続" not in L  # 本数ラベルは該当する最長の 1 つだけ
 
 
+DAYS = [f"2026-10-{d:02d}" for d in (1, 2, 5, 6, 7, 8, 9, 13, 14, 15, 16)]  # 営業日(10/12 は祝日)
+
+
+def _bars(highs, dates=DAYS):
+    return [{"date": d, "high": h, "low": 90.0} for d, h in zip(dates, highs)]
+
+
 def test_evaluate_hit_day_and_final():
-    bars = [{"date": f"d{i}", "high": h, "low": 90} for i, h in
-            enumerate([105, 110, 121, 130, 100, 100, 100, 100, 100, 100, 200], 1)]
-    r = evaluate(100.0, bars)
+    from surge_radar.track import status_of
+    r = evaluate(100.0, _bars([105, 110, 121, 130, 100, 100, 100, 100, 100, 100, 200]), DAYS[:10])
     assert r["hit"] is True and r["hit_day"] == 3
-    assert r["bars_tracked"] == 10 and r["final"] is True
-    assert abs(r["max_ret"] - 0.30) < 1e-9  # 11 本目の 200 は窓の外
+    assert r["final"] is True and r["deadline"] == "2026-10-15"
+    assert abs(r["max_ret"] - 0.30) < 1e-9          # 11 営業日目の 200 は期間の外
+    assert status_of(r) == "hit"
 
 
-def test_evaluate_exact_target_counts_and_partial_window():
-    r = evaluate(100.0, [{"date": "d1", "high": 120.0, "low": 95.0}])
-    assert r["hit"] is True and r["final"] is False
-    r = evaluate(100.0, [{"date": "d1", "high": 119.99, "low": 95.0}])
-    assert r["hit"] is False and r["final"] is False
+def test_missing_bar_does_not_shift_window_into_day_11():
+    """株価が 1 日欠けても、11 営業日目の高値を期間内に数えない(本数ではなく日付で判定する)。"""
+    from surge_radar.track import status_of
+    bars = _bars([100] * 11)
+    bars = [b for b in bars if b["date"] != "2026-10-06"]          # 4 営業日目が欠けた
+    bars[-1]["high"] = 150                                          # 11 営業日目(10/16)だけ +50%
+    r = evaluate(100.0, bars, DAYS[:10])
+    assert r["hit"] is False
+    assert r["missing_dates"] == ["2026-10-06"]
+    assert status_of(r) == "unverified"                             # 失敗にもしない
+
+
+def test_miss_needs_complete_window():
+    from surge_radar.track import status_of
+    r = evaluate(100.0, _bars([110] * 10), DAYS[:10])
+    assert r["final"] and not r["hit"] and not r["missing_dates"] and status_of(r) == "miss"
+
+
+def test_evaluate_exact_target_and_partial_window():
+    from surge_radar.track import status_of
+    r = evaluate(100.0, _bars([120.0]), DAYS[:1])
+    assert r["hit"] is True and r["final"] is False and status_of(r) == "hit"
+    r = evaluate(100.0, _bars([119.99]), DAYS[:1])
+    assert r["hit"] is False and r["final"] is False and status_of(r) == "tracking"
 
 
 def test_evaluate_no_bars_yet():
-    r = evaluate(100.0, [])
-    assert r["bars_tracked"] == 0 and r["hit"] is False and r["final"] is False
+    r = evaluate(100.0, [], [])
+    assert r["days_elapsed"] == 0 and r["hit"] is False and r["final"] is False
 
 
-def test_split_adjustment_prevents_false_failure():
-    from surge_radar.track import adjust_for_splits
-    # 2:1 分割が 3 日目に起きた。分割前の足は旧基準(1000 前後)、分割後は新基準(500 前後)
-    bars = [{"date": "d1", "high": 1010, "low": 990}, {"date": "d2", "high": 1020, "low": 1000},
-            {"date": "d3", "high": 610, "low": 500}]
-    p0, adj, note = adjust_for_splits(1000.0, "d0", bars, [{"date": "d3", "ratio": 2.0}])
-    assert p0 == 500.0 and adj[0]["high"] == 505.0 and adj[2]["high"] == 610
-    assert note and "d3" in note
-    r = evaluate(p0, adj)
-    assert r["hit"] is True and r["hit_day"] == 3  # 分割後 610 は 500×1.2 を超える
-    # 分割が無ければ何もしない
-    p0, adj, note = adjust_for_splits(1000.0, "d0", bars, [{"date": "c9", "ratio": 2.0}])
-    assert p0 == 1000.0 and note is None
+def test_split_factor():
+    from surge_radar.track import split_factor
+    # 基準日より後の 2:1 分割 → P0 を 2 で割る。基準日以前の分割は関係ない
+    f, note = split_factor("2026-10-01", [{"date": "2026-09-01", "ratio": 5.0}, {"date": "2026-10-06", "ratio": 2.0}])
+    assert f == 2.0 and "2026-10-06" in note
+    r = evaluate(1000.0 / f, _bars([505, 510, 610]), DAYS[:3])    # 取り直した株価はすべて分割後の基準
+    assert r["hit"] is True and r["hit_day"] == 3
+    assert split_factor("2026-10-01", []) == (1.0, None)
 
 
 def test_material_window():

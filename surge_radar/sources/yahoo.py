@@ -32,10 +32,12 @@ def to_yahoo_symbol(code: str) -> str:
 
 def fetch_ohlcv(code: str, range_: str = "2y", interval: str = "1d",
                 retries: int = 3, pause: float = 0.4) -> pd.DataFrame:
-    """1銘柄の日足を取得。columns: date(open/high/low/close/volume). 失敗時は空DF。"""
+    """1銘柄の日足を取得。columns: date(open/high/low/close/volume). 失敗時は空DF。
+    返す価格は取得時点までの株式分割を反映した基準(Yahoo の仕様)。取得範囲内の分割は
+    df.attrs["splits"] = [{"date", "ratio"}] に入れる(分割前に保存した行と基準が違うことを呼び出し側が判断するため)。"""
     sym = to_yahoo_symbol(code)
     url = _BASE.format(sym=sym)
-    params = {"range": range_, "interval": interval, "includeAdjustedClose": "true"}
+    params = {"range": range_, "interval": interval, "includeAdjustedClose": "true", "events": "split"}
     last_err = None
     for attempt in range(retries):
         try:
@@ -63,6 +65,12 @@ def fetch_ohlcv(code: str, range_: str = "2y", interval: str = "1d",
             })
             df = df.dropna(subset=["close"]).reset_index(drop=True)
             df["turnover"] = df["close"] * df["volume"]
+            splits = []
+            for sp in ((res.get("events") or {}).get("splits") or {}).values():
+                if sp.get("numerator") and sp.get("denominator"):
+                    splits.append({"date": datetime.fromtimestamp(sp["date"], tz=_JST).strftime("%Y-%m-%d"),
+                                   "ratio": sp["numerator"] / sp["denominator"]})
+            df.attrs["splits"] = sorted(splits, key=lambda x: x["date"])
             time.sleep(pause)
             return df
         except Exception as e:  # noqa: BLE001

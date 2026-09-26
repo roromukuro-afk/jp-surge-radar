@@ -136,6 +136,12 @@ CREATE TABLE IF NOT EXISTS outcomes (
     updated_at    TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS market_days (
+    date        TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    added_at    TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id          BIGSERIAL PRIMARY KEY,
     job         TEXT NOT NULL,
@@ -178,6 +184,10 @@ ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS exclusions JSONB;
 ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS report TEXT;
 ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS split_note TEXT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS deadline TEXT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS missing_dates TEXT[];
+CREATE TABLE IF NOT EXISTS market_days (date TEXT PRIMARY KEY, source TEXT NOT NULL,
+                                        added_at TIMESTAMPTZ DEFAULT now());
 """
 
 
