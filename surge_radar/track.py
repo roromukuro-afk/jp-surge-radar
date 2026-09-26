@@ -1,346 +1,60 @@
 """
-予測の追跡・成否判定・教師データ化 (学習ループの本丸)。
+候補の成否を追跡する。
 
-予測 → 追跡 → 成否判定 → 失敗理由分析 → 教師データ追加 → 再学習 → 的中率改善。
-- open な予測について、T0以降の値動きから 5/10/20営業日の成否を判定。
-- +20%到達でS/A/B、未達はnear/fail/danger_fail。失敗は具体的タグ付け。
-- 20営業日分の追跡が完了したら status=judged にし、live_fail/live_success 教師データを追加。
-- +20%到達で早期に judged にした予測も、20営業日そろった時点で教師データを追加する。
+判定: 基準日の終値 × 1.2 に、基準日の翌営業日から 10 営業日以内の場中高値が届けば成功。
+一度届いた時点で成功は確定する(hit=True)。最高値・最安値は 10 営業日ぶん記録し続け、
+10 営業日を過ぎたら final=True にする。IR などの理由を問わず、届いたかどうかだけで判定する。
 """
 from __future__ import annotations
 
-from datetime import datetime
+from . import db
 
-from . import db, ingest, labeling, materials, themes
-from .config import JUDGE_WINDOW
-from .db import loadj
-
-
-# 1トランザクション(=Neon往復のまとまり)あたりの行数
-WRITE_CHUNK = 500
-
-OUTCOME_SQL = (
-    """INSERT INTO prediction_outcomes
-       (prediction_id,judged_date,bars_tracked,max_up_5d,max_up_10d,max_up_20d,
-        days_to_20pct,max_drawdown,close_up_maintained,faded_after_high,
-        material_continued,volume_continued,result_class,failure_tags,notes,next_learning)
-       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-       ON CONFLICT(prediction_id) DO UPDATE SET
-         judged_date=excluded.judged_date,bars_tracked=excluded.bars_tracked,
-         max_up_5d=excluded.max_up_5d,max_up_10d=excluded.max_up_10d,
-         max_up_20d=excluded.max_up_20d,days_to_20pct=excluded.days_to_20pct,
-         max_drawdown=excluded.max_drawdown,close_up_maintained=excluded.close_up_maintained,
-         faded_after_high=excluded.faded_after_high,material_continued=excluded.material_continued,
-         volume_continued=excluded.volume_continued,result_class=excluded.result_class,
-         failure_tags=excluded.failure_tags,next_learning=excluded.next_learning,
-         updated_at=CURRENT_TIMESTAMP""")
+WINDOW = 10
+TARGET_RET = 0.20
 
 
-def _bars_since(df, t0_date: str) -> int:
-    after = df[df["date"] > t0_date]
-    return len(after)
+def evaluate(base_close: float, bars: list[dict]) -> dict:
+    """bars: 基準日より後の日足(日付昇順)。先頭 WINDOW 本だけを見る。"""
+    bars = [b for b in bars if b.get("high") is not None][:WINDOW]
+    target = base_close * (1 + TARGET_RET)
+    out = {"bars_tracked": len(bars), "max_high": None, "max_ret": None,
+           "min_low": None, "min_ret": None, "hit": False, "hit_day": None,
+           "final": len(bars) >= WINDOW, "last_date": bars[-1]["date"] if bars else None}
+    if not bars:
+        return out
+    for i, b in enumerate(bars, 1):
+        if out["hit_day"] is None and b["high"] >= target:
+            out["hit"], out["hit_day"] = True, i
+    out["max_high"] = max(b["high"] for b in bars)
+    out["min_low"] = min(b["low"] for b in bars)
+    out["max_ret"] = out["max_high"] / base_close - 1
+    out["min_ret"] = out["min_low"] / base_close - 1
+    return out
 
 
-def track_all(asof: str | None = None) -> dict:
-    asof = asof or datetime.now().strftime("%Y-%m-%d")
+def update_all() -> dict:
     with db.cursor() as conn:
-        preds = conn.execute("SELECT * FROM predictions WHERE status='open'").fetchall()
-        # +20%到達で早期に judged になった予測は、その時点では教師データを作らない
-        # (下の「教師データ追加は20営業日フル満了時のみ」参照)。open から外れるので
-        # 放置すると永遠に教師データにならず、日々の追跡で増えるのは live_fail だけ
-        # になる (2026-09-19 Neon実測: live由来は label=1 が81件 / label=0 が4335件、
-        # 教師データ未作成の早期成功が912件)。結果行の bars_tracked が JUDGE_WINDOW
-        # 未満のまま judged になっているもの (=早期成功) を満期待ちとして再評価する。
-        # 満期時に結果行を20営業日分で上書きするので、教師データが衝突/特徴量なしで
-        # 入らなくても次回以降この一覧から外れる。
-        maturing = conn.execute(
-            "SELECT p.*, o.judged_date AS early_judged_date FROM predictions p"
-            " JOIN prediction_outcomes o ON o.prediction_id=p.id"
-            " WHERE p.status='judged' AND o.bars_tracked < %s", (JUDGE_WINDOW,)).fetchall()
-        priced = {r["code"] for r in
-                  conn.execute("SELECT DISTINCT code FROM prices").fetchall()}
-
-    # 価格データが無い銘柄の予測はこのrunでは評価不能なのでスキップ
-    # (bootstrap で価格取得後に評価される)。無駄な往復を避ける。
-    skipped_no_price = sum(1 for p in preds if p["code"] not in priced)
-    preds = [p for p in preds if p["code"] in priced]
-    maturing = [p for p in maturing if p["code"] in priced]
-    print(f"    [track] {len(preds)} open with prices, {skipped_no_price} skipped (no price),"
-          f" {len(maturing)} early-judged awaiting {JUDGE_WINDOW} bars", flush=True)
-
-    judged = 0; updated = 0; live_fail = 0; live_success = 0; danger_fail = 0
-    matured = 0; matured_success = 0
-    success_sab = {"S": 0, "A": 0, "B": 0}
-    market_now = themes.market_regime(asof).get("score", 0.0)
-
-    # バルクプリロード: 銘柄ごとのDB往復を排除 (旧来は track が15分かかっていた)
-    # open予測のrun_dateは最大でもJUDGE_WINDOW(20営業日)前まで(それより古いものは
-    # 既に判定確定済みのはず)。60暦日あれば十分な余裕を持ってカバーできるため、
-    # 全2年分ではなくこの範囲だけ取得しNeonのデータ転送量を削減する。
-    codes = sorted({p["code"] for p in preds} | {p["code"] for p in maturing})
-    # 通常は open 予測の run_date は最大でも20営業日前なので60暦日で足りる。
-    # ただしバックフィル(過去日付の予測)があると run_date が1年近く前になり、
-    # 60暦日では基準日が履歴に入らず、下のループで「prior.empty → continue」と
-    # 黙って飛ばされて永遠に判定されない(2026-09-18に実際に発生)。
-    # 最古の open 予測の日付から必要な期間を計算する。バックフィルが判定済みに
-    # なれば open から外れるので、以後は自動的に60暦日前後に戻る。
-    oldest = min((p["run_date"] for p in [*preds, *maturing]), default=asof)
-    try:
-        span = (datetime.strptime(asof, "%Y-%m-%d")
-                - datetime.strptime(oldest, "%Y-%m-%d")).days
-    except ValueError:
-        span = 0
-    lookback = max(60, span + 45)
-    hist_map = ingest.load_history_bulk(codes, lookback_days=lookback, as_of=asof)
-    mat_map = materials.recent_material_scores_bulk(codes, asof)
-    print(f"    [track] preloaded {len(hist_map)} histories, {len(mat_map)} material scores", flush=True)
-
-    open_outcome_rows = []  # 追跡継続中 (open のまま) の prediction_outcomes upsert
-    finalized = []          # 確定する予測: (outcome_row, teacher_row | None)
-
-    work = [(p, False) for p in preds] + [(p, True) for p in maturing]
-    for p, early_judged in work:
-        df = hist_map.get(p["code"])
-        if df is None or df.empty:
-            continue
-        # T0インデックス
-        t0 = df.index[df["date"] == p["run_date"]]
-        if len(t0) == 0:
-            prior = df[df["date"] <= p["run_date"]]
-            if prior.empty:
-                continue
-            idx = prior.index[-1]
-        else:
-            idx = int(t0[0])
-
-        oc = labeling.forward_outcome(df, idx)
-        if oc is None:
-            continue
-        # 早期 judged は満期まで何も書かない (表示は早期判定時のまま)
-        if early_judged and oc["bars_tracked"] < JUDGE_WINDOW:
-            continue
-
-        result, base_tags = labeling.classify_result(oc)
-        feats = loadj(p["features"], {})
-
-        # 材料/出来高/テーマの継続確認(事後) — プリロード済みスコアを使用
-        mat_now = mat_map.get(p["code"], {})
-        material_continued = int(mat_now.get("has_fresh_material", 0) or mat_now.get("n_materials", 0) > 0)
-        volume_continued = int(oc["max_up_10d"] > 0 and not oc["faded_after_high"])
-
-        fail_tags = base_tags + labeling.derive_failure_tags(
-            oc, feats, material_continued=material_continued,
-            volume_continued=volume_continued, theme_followed=None,
-            market_score_now=market_now)
-        fail_tags = sorted(set(fail_tags))
-        next_learning = _next_learning(result, fail_tags)
-
-        # 早期 judged の満期処理では judged_date を早期判定日のまま残す
-        judged_date = p["early_judged_date"] if early_judged else asof
-        outcome_row = (
-            p["id"], judged_date, oc["bars_tracked"], oc["max_up_5d"], oc["max_up_10d"], oc["max_up_20d"],
-            oc["days_to_20pct"], oc["max_drawdown"], oc["close_up_maintained"], oc["faded_after_high"],
-            material_continued, volume_continued, result, db.j(fail_tags), "", next_learning)
-        updated += 1
-
-        # 20営業日追跡完了 or 既に+20%到達 → 確定 (status='judged' 表示用)
-        finalize = (oc["bars_tracked"] >= JUDGE_WINDOW) or (oc["days_to_20pct"] is not None)
-        if not finalize:
-            open_outcome_rows.append(outcome_row)
-            continue
-        label = labeling.is_success(oc)
-        if early_judged:
-            # judged/live_success は早期判定時に数え済み。ここでは満期分だけ数える
-            matured += 1
-            matured_success += label
-        elif label:
-            live_success += 1
-            if result in success_sab:
-                success_sab[result] += 1
-        else:
-            live_fail += 1
-            if result == "danger_fail":
-                danger_fail += 1
-        if not early_judged:
-            judged += 1
-
-        # 教師データ追加は20営業日フル満了時のみ (2026-09-07判明: 早期成功だけ
-        # finalize条件でここまで到達すると、直近1か月弱のteacher_samplesが
-        # 「成功例ばかり」に偏る。同じ日の失敗例はbars_tracked>=20に達する
-        # 数週間後まで教師データに入らないため、track_all を毎日呼ぶたびに
-        # 直近日付ほど label=1 に極端に偏ったサンプルで再学習していた
-        # (実例: t0_date=2026-08-10〜09-04の教師データはlabel=0がほぼ0件、
-        # label=1のみ計300件超)。成功/失敗を同じ成熟条件で捉えないと
-        # クラス比率が歪むため、教師データ追加はbars_tracked>=JUDGE_WINDOW
-        # のみに限定する(早期成功の status='judged' 表示自体は変えない)。
-        # 早期成功は満期になった run で上の maturing から再評価され、ここで追加される。
-        teacher_row = None
-        if oc["bars_tracked"] >= JUDGE_WINDOW:
-            teacher_row = _teacher_row(p, feats, label, fail_tags, result)
-        finalized.append((outcome_row, teacher_row))
-
-    # まとめて書き込み
-    for i in range(0, len(open_outcome_rows), WRITE_CHUNK):
-        db.executemany(OUTCOME_SQL, open_outcome_rows[i:i + WRITE_CHUNK])
-    # 確定分は「結果・教師データ・status='judged'」をチャンクごとに1トランザクションで
-    # コミットする。2026-09-18: バックフィルで open が6.7万件に増え、旧実装は教師データを
-    # 1件ずつ (SELECT→INSERT→COMMIT の往復) 入れていたため track が180分の
-    # タイムアウトまで終わらず、status 更新が最後にまとめて行われる構造だったので
-    # 進捗が全て捨てられ、翌日も同じ所で詰まって predict に到達しなかった。
-    # チャンク単位で確定させれば途中で打ち切られても次回は残りから再開できる。
-    # 教師データと status を同じトランザクションに入れるのは、status だけ先に
-    # judged になると open から外れて教師データが二度と追加されなくなるため。
-    for i in range(0, len(finalized), WRITE_CHUNK):
-        chunk = finalized[i:i + WRITE_CHUNK]
-        _commit_finalized([o for o, _ in chunk], [t for _, t in chunk if t is not None])
-        if len(finalized) > WRITE_CHUNK:
-            print(f"    [track] finalized {min(i + WRITE_CHUNK, len(finalized))}/{len(finalized)}",
-                  flush=True)
-
-    return {"asof": asof, "open_evaluated": len(preds), "updated": updated,
-            "judged": judged, "live_fail": live_fail, "live_success": live_success,
-            "danger_fail": danger_fail, "success_sab": success_sab,
-            "matured": matured, "matured_success": matured_success}
-
-
-TEACHER_SQL = (
-    # teacher_samples は (code, t0_date) に一意制約がある。seed-teacher が作った
-    # historical_pos/neg は過去日付を広くカバーしているため、バックフィル予測は
-    # 同じ (銘柄, 日付) で衝突しうる (2026-09-18 に UniqueViolation で停止)。
-    # 衝突したら既存を残す — 同じ1点を2件入れるとその点だけ二重に学習されるため。
-    "INSERT INTO teacher_samples(source,code,t0_date,label,features,tags,prediction_id)"
-    " VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (code, t0_date) DO NOTHING")
-
-
-def _teacher_row(pred, feats: dict, label: int, fail_tags: list[str], result: str):
-    if not feats:
-        return None
-    source = "live_success" if label else "live_fail"
-    return (source, pred["code"], pred["run_date"], label,
-            db.j(feats), db.j({"failure_tags": fail_tags, "result": result}), pred["id"])
-
-
-def _commit_finalized(outcome_rows: list[tuple], teacher_rows: list[tuple]) -> None:
-    """確定分1チャンクを1トランザクションで書く (結果 upsert → 教師データ → judged)。"""
-    ids = [r[0] for r in outcome_rows]
-    with db.cursor() as conn:
-        conn.executemany(OUTCOME_SQL, outcome_rows)
-        if teacher_rows:
-            # 重複防止: 既に同じ予測から作った教師データがあれば入れない。
-            # 1件ずつ問い合わせず、チャンク分の id をまとめて1回で引く。
-            tids = [r[6] for r in teacher_rows]
-            ph = ",".join("%s" for _ in tids)
-            have = {r["prediction_id"] for r in conn.execute(
-                f"SELECT prediction_id FROM teacher_samples WHERE prediction_id IN ({ph})",
-                tids).fetchall()}
-            new_rows = [r for r in teacher_rows if r[6] not in have]
-            if new_rows:
-                conn.executemany(TEACHER_SQL, new_rows)
-        ph = ",".join("%s" for _ in ids)
-        conn.execute(f"UPDATE predictions SET status='judged' WHERE id IN ({ph})", ids)
-
-
-def _next_learning(result: str, tags: list[str]) -> str:
-    if result in ("S", "A", "B"):
-        return f"成功({result}): この急騰前パターンを正例として強化"
-    if result == "near":
-        return "惜しい(+10〜20%): 到達余地/出来高継続の重みを微調整"
-    msgs = {
-        "quick_fail": "予測直後の下落を弾くため初動性/支持線条件を強化",
-        "material_fail": "材料の一過性検出(続報・出来高継続)の重みを上げる",
-        "chart_fail": "騙しブレイク検出(出来高裏付け)を強化",
-        "volume_fail": "天井大商い/上ヒゲの減点を強化",
-        "trend_fail": "右肩下がり除外ゲートを強化",
-        "theme_fail": "テーマ波及の客観確認を厳格化",
-        "market_fail": "地合い悪化時の全体慎重度を上げる",
-        "trap_fail": "高値圏下落トラップ除外を強化",
-        "dilution_fail": "希薄化/資金調達リスクの減点を強化",
-        "liquidity_fail": "流動性ゲートを厳格化",
-    }
-    picked = [msgs[t] for t in tags if t in msgs]
-    return " / ".join(picked) if picked else "失敗例として負例に追加し再学習"
-
-
-def accuracy_stats() -> dict:
-    """的中率・失敗率の集計。live/backfill 別も返す。"""
-    with db.cursor() as conn:
-        rows = conn.execute(
-            "SELECT o.result_class, COUNT(*) n FROM prediction_outcomes o "
-            "JOIN predictions p ON p.id=o.prediction_id WHERE p.status='judged' "
-            "GROUP BY o.result_class").fetchall()
-        cat_rows = conn.execute(
-            "SELECT p.category, o.result_class, COUNT(*) n FROM prediction_outcomes o "
-            "JOIN predictions p ON p.id=o.prediction_id WHERE p.status='judged' "
-            "GROUP BY p.category,o.result_class").fetchall()
-        tag_rows = conn.execute(
-            "SELECT failure_tags FROM prediction_outcomes o JOIN predictions p ON p.id=o.prediction_id "
-            "WHERE p.status='judged'").fetchall()
-        origin_rows = conn.execute(
-            "SELECT COALESCE(p.origin,'live') origin, o.result_class, COUNT(*) n "
-            "FROM prediction_outcomes o JOIN predictions p ON p.id=o.prediction_id "
-            "WHERE p.status='judged' GROUP BY p.origin, o.result_class").fetchall()
-        path_rows = conn.execute(
-            """SELECT json_extract(p.flags,'$.classify_path') path,
-                      o.result_class, COUNT(1) n
-               FROM prediction_outcomes o JOIN predictions p ON p.id=o.prediction_id
-               WHERE p.status='judged' AND p.category IN ('A','B','C')
-                 AND json_extract(p.flags,'$.classify_path') IS NOT NULL
-               GROUP BY path, o.result_class""").fetchall()
-
-    by_class = {r["result_class"]: r["n"] for r in rows}
-    total = sum(by_class.values())
-    success = by_class.get("S", 0) + by_class.get("A", 0) + by_class.get("B", 0)
-    near = by_class.get("near", 0)
-
-    # 分類別
-    by_cat: dict = {}
-    for r in cat_rows:
-        by_cat.setdefault(r["category"], {})[r["result_class"]] = r["n"]
-
-    # 失敗タグ集計
-    tag_count: dict = {}
-    for r in tag_rows:
-        for t in loadj(r["failure_tags"], []) or []:
-            tag_count[t] = tag_count.get(t, 0) + 1
-
-    # origin 別集計
-    by_origin_raw: dict = {}
-    for r in origin_rows:
-        by_origin_raw.setdefault(r["origin"], {})[r["result_class"]] = r["n"]
-
-    # B/C 条件パス別成功率
-    by_path_raw: dict = {}
-    for r in path_rows:
-        by_path_raw.setdefault(r["path"] or "unknown", {})[r["result_class"]] = r["n"]
-    by_path: dict = {}
-    for path, d in by_path_raw.items():
-        tot = sum(d.values())
-        s = d.get("S", 0) + d.get("A", 0) + d.get("B", 0)
-        by_path[path] = {
-            "total": tot, "by_class": d,
-            "hit_rate": round(s / tot, 3) if tot else None,
-        }
-
-    def _origin_stats(d: dict) -> dict:
-        tot = sum(d.values())
-        s = d.get("S", 0) + d.get("A", 0) + d.get("B", 0)
-        n = d.get("near", 0)
-        return {
-            "total": tot,
-            "by_class": d,
-            "hit_rate": round(s / tot, 4) if tot else None,
-            "hit_or_near_rate": round((s + n) / tot, 4) if tot else None,
-        }
-
-    by_origin = {k: _origin_stats(v) for k, v in by_origin_raw.items()}
-
-    return {
-        "total_judged": total,
-        "by_class": by_class,
-        "hit_rate": round(success / total, 4) if total else None,
-        "hit_or_near_rate": round((success + near) / total, 4) if total else None,
-        "by_category": by_cat,
-        "failure_tags": dict(sorted(tag_count.items(), key=lambda kv: -kv[1])),
-        "by_origin": by_origin,
-        "by_classify_path": by_path,
-    }
+        cands = conn.execute(
+            """SELECT c.id, c.code, c.base_date, c.base_close
+               FROM candidates c LEFT JOIN outcomes o ON o.candidate_id = c.id
+               WHERE o.final IS NOT TRUE""").fetchall()
+    updated = 0
+    for c in cands:
+        with db.cursor() as conn:
+            bars = conn.execute(
+                "SELECT date, high, low FROM prices WHERE code=%s AND date>%s "
+                "ORDER BY date LIMIT %s", (c["code"], c["base_date"], WINDOW)).fetchall()
+            r = evaluate(c["base_close"], bars)
+            conn.execute(
+                """INSERT INTO outcomes(candidate_id,bars_tracked,max_high,max_ret,min_low,
+                                        min_ret,hit,hit_day,final,last_date,updated_at)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                   ON CONFLICT(candidate_id) DO UPDATE SET
+                     bars_tracked=excluded.bars_tracked, max_high=excluded.max_high,
+                     max_ret=excluded.max_ret, min_low=excluded.min_low,
+                     min_ret=excluded.min_ret, hit=excluded.hit, hit_day=excluded.hit_day,
+                     final=excluded.final, last_date=excluded.last_date, updated_at=now()""",
+                (c["id"], r["bars_tracked"], r["max_high"], r["max_ret"], r["min_low"],
+                 r["min_ret"], r["hit"], r["hit_day"], r["final"], r["last_date"]))
+            updated += 1
+    return {"tracked": updated}

@@ -6,6 +6,7 @@ Yahoo Finance chart API クライアント (yfinanceラッパに依存しない�
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
 
@@ -23,7 +24,7 @@ def to_yahoo_symbol(code: str) -> str:
     code = str(code).strip()
     if code.endswith(".T") or code.startswith("^") or code.isalpha():
         return code
-    if code.isdigit():
+    if code.isdigit() or re.match(r"^[0-9][0-9A-Z][0-9][0-9A-Z]$", code):
         return f"{code}.T"
     return code
 

@@ -1,28 +1,21 @@
 name: Validate
+
+# 単体テストのみ。本番DBには一切接続しない(旧版はpushのたびに本番Neonで
+# track/train のスモークを走らせ、dry-run の記録で本番の実行記録を汚していた)。
 on:
   push:
     branches: [master]
+  pull_request:
   workflow_dispatch:
+
 jobs:
-  validate:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      PYTHONUNBUFFERED: "1"
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      SURGE_ENABLE_LLM: "0"
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements-pipeline.txt
-      - name: DB connection and schema
-        run: python -m surge_radar.cli init-db
-      - name: Quick pipeline smoke test (non-destructive, no predict store)
-        run: python scripts/run_daily.py "5" "true" "true" "false"
-      - name: Summary
-        if: always()
-        run: python scripts/cloud_summary.py || true
+      - run: pip install -r requirements.txt pytest pandas
+      - run: python -m pytest -q tests/

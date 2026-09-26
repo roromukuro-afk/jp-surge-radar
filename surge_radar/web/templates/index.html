@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+{% macro status_chip(c) -%}
+  {%- if c.status == 'hit' -%}
+    <span class="chip bg-good/20 text-good border border-good/30">成功 {{c.hit_day}}日目</span>
+  {%- elif c.status == 'miss' -%}
+    <span class="chip bg-bad/20 text-bad border border-bad/30">失敗</span>
+  {%- else -%}
+    <span class="chip bg-panel2 text-slate-300 border border-line">追跡中 {{c.bars_tracked or 0}}/10日</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% if not sel %}
+  <div class="card p-6 text-slate-300">
+    まだ候補がありません。最初の候補は、日次タスクが初めて完了した後に表示されます。
+  </div>
+{% else %}
+  <div class="flex items-center gap-3 mb-4 flex-wrap">
+    <h1 class="text-lg font-bold">基準日 {{date}} の候補</h1>
+    <span class="text-sm text-slate-400">{{sel.candidates|length}}銘柄 / 母集団 {{sel.run.pool_size or '—'}}銘柄</span>
+    {% if dates|length > 1 %}
+    <form method="get" class="ml-auto">
+      <select name="date" onchange="this.form.submit()" class="bg-panel border border-line rounded-lg px-2 py-1 text-sm">
+        {% for d in dates %}<option value="{{d}}" {{'selected' if d==date}}>{{d}}</option>{% endfor %}
+      </select>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if sel.run.notes %}
+  <details class="card p-3 mb-4 text-sm">
+    <summary class="font-semibold text-slate-300">この日の振り返りメモ</summary>
+    <p class="mt-2 whitespace-pre-wrap text-slate-300">{{sel.run.notes}}</p>
+  </details>
+  {% endif %}
+
+  <div class="space-y-3">
+  {% for c in sel.candidates %}
+    <article class="card p-4">
+      <div class="flex items-start gap-3">
+        <div class="text-xl font-bold text-slate-500 w-6 text-center">{{c.rank}}</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-bold">{{c.name or ''}}</span>
+            <span class="text-slate-400 text-sm">{{c.code}}</span>
+            <span class="text-warn text-sm" title="確信度">{{'★' * c.conviction}}{{'☆' * (5 - c.conviction)}}</span>
+            <span class="ml-auto">{{ status_chip(c) }}</span>
+          </div>
+          <div class="text-sm text-slate-300 mt-1">
+            基準 {{'{:,.0f}'.format(c.base_close)}}円 → 目標 {{'{:,.0f}'.format(c.target)}}円
+            {% if c.max_ret is not none %}
+              <span class="ml-2 {{ 'text-good' if c.max_ret >= 0.2 else 'text-slate-400' }}">最高 {{'%+.1f'|format(c.max_ret*100)}}%</span>
+              <span class="ml-1 text-slate-500">最安 {{'%+.1f'|format(c.min_ret*100)}}%</span>
+            {% endif %}
+          </div>
+          <dl class="mt-3 text-sm space-y-1.5">
+            <div><dt class="inline text-slate-400">理由</dt> <dd class="inline">{{c.thesis}}</dd></div>
+            <div><dt class="inline text-slate-400">きっかけ</dt> <dd class="inline">{{c.trigger}}</dd></div>
+            <div><dt class="inline text-slate-400">リスク</dt> <dd class="inline">{{c.risk}}</dd></div>
+            <div><dt class="inline text-slate-400">チャート</dt> <dd class="inline">{{c.chart_view}}</dd></div>
+          </dl>
+          {% if c.labels %}
+          <div class="flex gap-1 flex-wrap mt-2">
+            {% for l in c.labels %}<span class="chip bg-panel2 text-slate-300 border border-line">{{l}}</span>{% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}

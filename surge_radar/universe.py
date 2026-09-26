@@ -13,9 +13,16 @@ import io
 import pandas as pd
 import requests
 
+import re
+
 from . import db
 from .config import CACHE_DIR, TARGET_MARKETS
 from .sources import jquants
+
+# 証券コード: 数字 4 桁に加え、2024 年以降の英字入りコード(例 130A, 464A)。
+# 2026-09-26 まで isdigit() で英字入りを捨てており、2024 年以降に上場した銘柄が
+# 台帳に 1 件も入っていなかった。
+CODE_RE = re.compile(r"^[0-9][0-9A-Z][0-9][0-9A-Z]$")
 
 JPX_XLS_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 
@@ -72,7 +79,7 @@ SEED = [
 def _clean_seed() -> list[tuple]:
     out = []
     for code, name, market, sec in SEED:
-        if not code.isdigit():
+        if not CODE_RE.match(code):
             continue  # プレースホルダ除去
         out.append((code, name, market, sec))
     return out
@@ -121,7 +128,7 @@ def _normalize_jpx(df: pd.DataFrame) -> list[dict]:
     out = []
     for _, row in df.iterrows():
         code = str(row[c_code]).strip().split(".")[0] if c_code else None
-        if not code or not code.isdigit():
+        if not code or not CODE_RE.match(code):
             continue
         market = str(row[c_mkt]) if c_mkt else ""
         # ETF/REIT/出資証券などは除外し、内国株式中心
@@ -158,7 +165,7 @@ def load_universe(use_remote: bool = True) -> list[dict]:
             rows = []
             for _, r in dfj.iterrows():
                 code = str(r.get("Code", "")).strip()[:4]
-                if not code.isdigit():
+                if not CODE_RE.match(code):
                     continue
                 rows.append({
                     "code": code,
