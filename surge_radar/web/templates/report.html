@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}レポート {{date}} | 日本株 急騰レーダー{% endblock %}
+{% block content %}
+{% if not rep %}
+  <div class="card p-6 text-slate-300">この基準日のレポートはありません。</div>
+{% else %}
+  <h1 class="text-lg font-bold mb-1">基準日 {{rep.base_date}} のレポート</h1>
+  <p class="text-sm text-slate-400 mb-4">T_now {{rep.t_now}} / T_prev {{rep.t_prev or '前回分析日時不明'}} · <a href="/?date={{rep.base_date}}">候補に戻る</a></p>
+  <div class="card p-4 text-sm leading-relaxed whitespace-pre-wrap break-words">{{rep.report}}</div>
+{% endif %}
+{% endblock %}

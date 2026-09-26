@@ -1,9 +1,9 @@
 """
-未ラベルの見出しを、同じ見出しを 1 件にまとめて出力する(Claude のラベル付け用)。
+未処理の見出しを、同じ見出しを 1 件にまとめて出力する(Claude の材料ラベル付け用。procedures/label.md)。
 
-株価・候補・成否は出さない(procedures/label.md: ラベルが値動きに引きずられないように)。
+株価・候補・成否は出さない(ラベルが値動きに引きずられないように)。
 
-使い方: python scripts/news_to_label.py [--limit 300] [--count]
+使い方: python scripts/news_to_label.py [--limit 200] [--count]
 """
 from __future__ import annotations
 
@@ -17,23 +17,23 @@ from surge_radar import db
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=300)
-    ap.add_argument("--count", action="store_true", help="未ラベルの件数だけ出す")
+    ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument("--count", action="store_true", help="未処理の件数だけ出す")
     a = ap.parse_args()
 
     with db.cursor() as conn:
         if a.count:
             r = conn.execute(
                 """SELECT COUNT(DISTINCT n.title_key) n FROM news n
-                   LEFT JOIN news_labels l ON l.title_key = n.title_key
-                   WHERE l.title_key IS NULL""").fetchone()
-            print(json.dumps({"unlabeled_titles": r["n"]}))
+                   LEFT JOIN news_reviews v ON v.title_key = n.title_key
+                   WHERE v.title_key IS NULL""").fetchone()
+            print(json.dumps({"unreviewed_titles": r["n"]}))
             return
         rows = conn.execute(
             """WITH pending AS (
                  SELECT n.title_key, MAX(n.date) d FROM news n
-                 LEFT JOIN news_labels l ON l.title_key = n.title_key
-                 WHERE l.title_key IS NULL
+                 LEFT JOIN news_reviews v ON v.title_key = n.title_key
+                 WHERE v.title_key IS NULL
                  GROUP BY n.title_key ORDER BY d DESC, n.title_key LIMIT %s)
                SELECT p.title_key, p.d, n.title, n.source, n.code, s.name
                FROM pending p

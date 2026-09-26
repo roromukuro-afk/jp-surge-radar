@@ -28,6 +28,20 @@ TDNET_API = "https://webapi.yanoshin.jp/webapi/tdnet/list/{q}.json"
 # 取れていなかった(キー自体は有効)。API専用ホストを直接指定する。
 EDINET_API = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
 
+_HHMM = re.compile(r"(\d{1,2}):(\d{2})")
+
+
+def _published(date_str: str, raw: str | None) -> str | None:
+    """日付(YYYY-MM-DD)と、サイトが表示した時刻を含む文字列から、公開日時(JST)を作る。
+    時刻が読み取れなければ None(公開時刻不明)。日付だけから時刻を推測しない。"""
+    m = _HHMM.search(raw or "")
+    if not (date_str and m):
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh < 24 and 0 <= mm < 60):
+        return None
+    return f"{date_str}T{hh:02d}:{mm:02d}:00+09:00"
+
 _kabutan_logged_error = False
 
 _minkabu_logged_error = False
@@ -148,9 +162,11 @@ def fetch_tdnet_range(since_date: str, until_date: str | None = None,
         code = _norm_code(td.get("company_code", ""))
         if not re.match(r"^[0-9][0-9A-Z][0-9][0-9A-Z]$", code):
             continue
+        pub = td.get("pubdate") or ""
         by_code.setdefault(code, []).append({
-            "date": (td.get("pubdate") or "")[:10], "title": td.get("title", ""),
-            "url": td.get("document_url", ""), "source": "tdnet"})
+            "date": pub[:10], "title": td.get("title", ""),
+            "url": td.get("document_url", ""), "source": "tdnet",
+            "published_at": _published(pub[:10], pub[11:])})
     print(f"    [TDnet] {since_date}〜{until_date}: {len(items)} 件 / {len(by_code)} 社", flush=True)
     if by_code:
         _save_cache(cf, by_code)
@@ -204,7 +220,8 @@ def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
         if len(sec_code) < 4:
             continue
         code = sec_code[:4]
-        submit_date = (doc.get("submitDateTime") or "")[:10] or date
+        submit = doc.get("submitDateTime") or ""
+        submit_date = submit[:10] or date
         desc = doc.get("docDescription") or ""
         filer = doc.get("filerName") or ""
         by_code.setdefault(code, []).append({
@@ -212,6 +229,7 @@ def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
             "title": f"{desc}（{filer}）" if filer else desc,
             "url": "",
             "source": "edinet",
+            "published_at": _published(submit_date, submit[11:]),
         })
 
     if by_code:
@@ -270,7 +288,7 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
                 href = "https://kabutan.jp" + href
             # Date format: "26/06/25 15:30" (YY/MM/DD HH:MM)
             date_raw = time_el.get_text(strip=True) if time_el else ""
-            date_str = now.strftime("%Y-%m-%d")
+            date_str = None  # 日付が読めない見出しは保存しない(今日の日付で埋めない)
             if date_raw:
                 try:
                     parts = date_raw.split("/")
@@ -289,11 +307,14 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
                     date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
                 except Exception:
                     pass
+            if not date_str:
+                continue
             out.append({
                 "date": date_str,
                 "title": title,
                 "url": href,
                 "source": "kabutan",
+                "published_at": _published(date_str, date_raw),
             })
         return out
     except Exception as e:
@@ -354,7 +375,7 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
                 t = div.get_text(strip=True)
                 if t:
                     time_text = t
-            date_str = now.strftime("%Y-%m-%d")
+            date_str = None  # 日付が読めない見出しは保存しない(今日の日付で埋めない)
             try:
                 if "今日" in time_text:
                     date_str = now.strftime("%Y-%m-%d")
@@ -365,11 +386,14 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
                     date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
             except Exception:
                 pass
+            if not date_str:
+                continue
             out.append({
                 "date": date_str,
                 "title": title,
                 "url": href,
                 "source": f"minkabu({orig_source})" if orig_source != "minkabu" else "minkabu",
+                "published_at": _published(date_str, time_text),
             })
         return out
     except Exception as e:
@@ -423,19 +447,25 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20, session=None) -> list[di
             time_el = it.find(class_=re.compile(r"supplement--time"))
             orig_source = media_el.get_text(strip=True) if media_el else "yahoo"
             time_text = time_el.get_text(strip=True) if time_el else ""
-            date_str = now.strftime("%Y-%m-%d")
+            # 表記は "9/25"(当日以外・時刻なし)か "8:50"(当日)。2026-09-26 に実ページで確認
+            date_str = None  # 日付が読めない見出しは保存しない(今日の日付で埋めない)
             try:
                 if "/" in time_text:
-                    mm, dd = (int(x) for x in time_text.split("/"))
+                    mm, dd = (int(x) for x in time_text.split()[0].split("/"))
                     yr = now.year if mm <= now.month else now.year - 1
                     date_str = f"{yr:04d}-{mm:02d}-{dd:02d}"
+                elif _HHMM.fullmatch(time_text):
+                    date_str = now.strftime("%Y-%m-%d")
             except Exception:
                 pass
+            if not date_str:
+                continue
             out.append({
                 "date": date_str,
                 "title": title,
                 "url": href,
                 "source": f"yahoojp({orig_source})" if orig_source != "yahoo" else "yahoojp",
+                "published_at": _published(date_str, time_text),
             })
         return out
     except Exception:
@@ -448,7 +478,7 @@ def _parse_nikkei_date(text: str, now: datetime) -> str:
     日経の銘柄別ニュース一覧の日付表記を YYYY-MM-DD に変換する。
     実表記は4パターン: "18:13"(当日・時刻のみ) / "9/16" / "2025/12/5" /
     "9/15更新"。年が省略された表記で月日が未来になる場合は前年とみなす。
-    解釈できない場合は "" を返す(呼び出し側で当日扱いにフォールバック)。
+    解釈できない場合は "" を返す(呼び出し側はその見出しを保存しない)。
     """
     t = (text or "").strip().replace("更新", "").strip()
     if not t:
@@ -504,7 +534,6 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
         now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
         for li in soup.select("li.m-listFormat_item")[:max_items]:
             a = li.select_one(".m-listItem_text_text a")
             if not a:
@@ -516,9 +545,14 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
             if href and not href.startswith("http"):
                 href = "https://www.nikkei.com" + href
             time_el = li.select_one(".m-listItem_time")
-            date_str = _parse_nikkei_date(
-                time_el.get_text(strip=True) if time_el else "", now) or today
-            out.append({"date": date_str, "title": title, "url": href, "source": "nikkei"})
+            time_text = time_el.get_text(strip=True) if time_el else ""
+            if "更新" in time_text:
+                continue  # 更新日時しか分からない(初回公開日時と混同しない)
+            date_str = _parse_nikkei_date(time_text, now)
+            if not date_str:
+                continue  # 日付が読めない見出しは保存しない(今日の日付で埋めない)
+            out.append({"date": date_str, "title": title, "url": href, "source": "nikkei",
+                        "published_at": _published(date_str, time_text)})
         return out
     except Exception:
         return []
@@ -597,14 +631,14 @@ def store(by_code: dict[str, list[dict]], since: str, until: str,
             if not title or not (since <= d <= until):
                 continue
             rows.append((code, d, it.get("source") or "", title, title_key(title),
-                         it.get("url") or ""))
+                         it.get("url") or "", it.get("published_at")))
     if not rows:
         return 0
     with db.cursor() as conn:
         before = conn.execute("SELECT COUNT(*) n FROM news").fetchone()["n"]
         conn.executemany(
-            """INSERT INTO news(code,date,source,title,title_key,url)
-               VALUES(%s,%s,%s,%s,%s,%s)
+            """INSERT INTO news(code,date,source,title,title_key,url,published_at)
+               VALUES(%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT(code,source,title,date) DO NOTHING""", rows)
         after = conn.execute("SELECT COUNT(*) n FROM news").fetchone()["n"]
     return after - before

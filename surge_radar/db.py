@@ -58,21 +58,39 @@ CREATE TABLE IF NOT EXISTS news (
     title       TEXT NOT NULL,
     title_key   TEXT NOT NULL,
     url         TEXT,
+    published_at TIMESTAMPTZ,
     fetched_at  TIMESTAMPTZ DEFAULT now(),
     UNIQUE (code, source, title, date)
 );
 CREATE INDEX IF NOT EXISTS news_title_key ON news (title_key);
 CREATE INDEX IF NOT EXISTS news_code_date ON news (code, date);
 
-CREATE TABLE IF NOT EXISTS news_labels (
+CREATE TABLE IF NOT EXISTS news_reviews (
     title_key   TEXT PRIMARY KEY,
     subjects    TEXT[] NOT NULL DEFAULT '{}',
-    kind        TEXT,
-    direction   SMALLINT,
-    scheduled   TEXT,
+    n_events    SMALLINT NOT NULL,
+    note        TEXT,
     procedure   TEXT NOT NULL,
     model       TEXT,
-    labeled_at  TIMESTAMPTZ DEFAULT now()
+    reviewed_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS material_events (
+    id          BIGSERIAL PRIMARY KEY,
+    title_key   TEXT NOT NULL REFERENCES news_reviews(title_key),
+    idx         SMALLINT NOT NULL,
+    subjects    TEXT[] NOT NULL,
+    event_type  TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    pathways    TEXT[] NOT NULL,
+    scope       TEXT NOT NULL,
+    stage       TEXT NOT NULL,
+    facts       TEXT NOT NULL,
+    amount      TEXT,
+    procedure   TEXT NOT NULL,
+    model       TEXT,
+    labeled_at  TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (title_key, idx)
 );
 
 CREATE TABLE IF NOT EXISTS candidates (
@@ -138,6 +156,31 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 """
 
 
+# 既存テーブルへの追加(2026-09-26 v5.3 対応)。何度流しても同じ結果になる
+MIGRATIONS = """
+ALTER TABLE news ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS t_now TIMESTAMPTZ;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS chart_patterns JSONB;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS supply JSONB;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS material_status TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS material_event_ids BIGINT[];
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS material_analysis TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS teacher_match TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS post_surge_check TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS dilution TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS path JSONB;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS falsifiers JSONB;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS routes TEXT[];
+ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS t_prev TIMESTAMPTZ;
+ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS t_now TIMESTAMPTZ;
+ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS funnel JSONB;
+ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS exclusions JSONB;
+ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS report TEXT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS split_note TEXT;
+"""
+
+
 class _Cursor:
     def __init__(self, cur):
         self._cur = cur
@@ -192,6 +235,11 @@ def cursor():
 def init_db() -> None:
     with cursor() as conn:
         conn.execute(SCHEMA)
+        conn.execute(MIGRATIONS)
+        # v1 の材料ラベル表(評価語 direction を持つ)は使わない。1 件も入っていない場合だけ消す
+        if conn.execute("SELECT to_regclass('news_labels') r").fetchone()["r"]:
+            if conn.execute("SELECT COUNT(*) n FROM news_labels").fetchone()["n"] == 0:
+                conn.execute("DROP TABLE news_labels")
 
 
 def j(obj: Any) -> str:

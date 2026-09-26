@@ -2,13 +2,14 @@
 {% block title %}成績 | 日本株 急騰レーダー{% endblock %}
 {% block content %}
 <h1 class="text-lg font-bold mb-3">成績</h1>
-<div class="grid grid-cols-3 gap-3 mb-5">
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
   <div class="card p-3"><div class="text-xs text-slate-400">判定済み</div><div class="text-2xl font-bold">{{h.decided}}</div></div>
   <div class="card p-3"><div class="text-xs text-slate-400">成功</div>
     <div class="text-2xl font-bold text-good">{{h.hits}}
       {% if h.decided %}<span class="text-sm text-slate-400">({{'%.0f'|format(h.hits / h.decided * 100)}}%)</span>{% endif %}
     </div></div>
-  <div class="card p-3"><div class="text-xs text-slate-400">追跡中</div><div class="text-2xl font-bold">{{h.open}}</div></div>
+  <div class="card p-3"><div class="text-xs text-slate-400">判定期間中</div><div class="text-2xl font-bold">{{h.open}}</div></div>
+  <div class="card p-3"><div class="text-xs text-slate-400">判定未確認</div><div class="text-2xl font-bold">{{h.unverified}}</div></div>
 </div>
 {% if not h.rows %}
   <div class="card p-6 text-slate-300">まだ候補がありません。</div>
@@ -18,7 +19,7 @@
     <thead class="text-slate-400 text-xs">
       <tr class="border-b border-line">
         <th class="text-left p-2">基準日</th><th class="text-left p-2">銘柄</th>
-        <th class="text-right p-2">確信</th><th class="text-right p-2">最高</th>
+        <th class="text-left p-2">材料</th><th class="text-right p-2">最高</th>
         <th class="text-right p-2">最安</th><th class="text-left p-2">結果</th>
       </tr>
     </thead>
@@ -27,13 +28,14 @@
       <tr class="border-b border-line/50">
         <td class="p-2 text-slate-400 whitespace-nowrap"><a href="/?date={{c.base_date}}">{{c.base_date}}</a></td>
         <td class="p-2">{{c.name or ''}} <span class="text-slate-500">{{c.code}}</span></td>
-        <td class="p-2 text-right">{{c.conviction}}</td>
+        <td class="p-2 text-slate-400 whitespace-nowrap">{{c.material_status}}</td>
         <td class="p-2 text-right">{% if c.max_ret is not none %}{{'%+.1f'|format(c.max_ret*100)}}%{% else %}—{% endif %}</td>
         <td class="p-2 text-right text-slate-400">{% if c.min_ret is not none %}{{'%+.1f'|format(c.min_ret*100)}}%{% else %}—{% endif %}</td>
         <td class="p-2 whitespace-nowrap">
           {% if c.status == 'hit' %}<span class="text-good">成功 {{c.hit_day}}日目</span>
           {% elif c.status == 'miss' %}<span class="text-bad">失敗</span>
-          {% else %}<span class="text-slate-400">追跡中 {{c.bars_tracked or 0}}/10</span>{% endif %}
+          {% elif c.status == 'unverified' %}<span class="text-warn">判定未確認</span>
+          {% else %}<span class="text-slate-400">判定期間中 {{c.bars_tracked or 0}}/10</span>{% endif %}
         </td>
       </tr>
     {% endfor %}

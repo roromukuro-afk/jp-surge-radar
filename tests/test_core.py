@@ -7,8 +7,9 @@ def _bar(d, o, h, l, c, v):
     return {"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
 
 
-def _flat(n, price=500.0, vol=100_000):
-    return [_bar(f"2026-09-{i+1:02d}", price, price * 1.01, price * 0.99, price, vol) for i in range(n)]
+def _flat(n, price=500.0, vol=100_000, spread=0.01):
+    return [_bar(f"d{i:02d}", price, price * (1 + spread), price * (1 - spread), price, vol)
+            for i in range(n)]
 
 
 def test_price_limit_table():
@@ -20,43 +21,59 @@ def test_price_limit_table():
     assert price_limit(3000) == 700
 
 
-def test_stop_high_close_and_breakout_and_volume_spike():
-    bars = _flat(11)
-    # 前日終値 500 → 値幅 100 → ストップ高 600。出来高は直近平均の 5 倍。
-    bars.append(_bar("2026-09-12", 520, 600, 515, 600, 500_000))
-    f, labels = compute(bars)
-    assert "ストップ高引け" in labels
-    assert "ストップ高タッチ" not in labels
-    assert "ブレイク2週" in labels
-    assert "出来高急増" in labels
-    assert "急騰" in labels
-    assert "ブレイク1か月" not in labels  # 足が 20 本に満たない
+def test_stop_high_close_breakout_volume_spike():
+    bars = _flat(25)
+    # 前日終値 500 → 値幅 100 → ストップ高 600。出来高は直前 20 日平均の 5 倍。
+    bars.append(_bar("d25", 520, 600, 515, 600, 500_000))
+    f, L = compute(bars)
+    for lb in ("ストップ高引け", "20日高値更新", "10日高値更新", "5日高値更新", "出来高急増",
+               "価格上昇＋出来高増加", "1日+10%以上", "大陽線", "高値引け", "20日線上", "20日線回復"):
+        assert lb in L, lb
+    assert "ストップ高タッチ" not in L
     assert abs(f["ret_1d"] - 0.2) < 1e-9
+    assert abs(f["vol_ratio20"] - 5.0) < 1e-9
 
 
-def test_stop_high_touch_only():
-    bars = _flat(11)
-    bars.append(_bar("2026-09-12", 520, 600, 515, 560, 100_000))
-    _, labels = compute(bars)
-    assert "ストップ高タッチ" in labels
-    assert "ストップ高引け" not in labels
+def test_stop_high_touch_and_long_upper_wick():
+    bars = _flat(25)
+    bars.append(_bar("d25", 505, 600, 500, 510, 100_000))
+    _, L = compute(bars)
+    assert "ストップ高タッチ" in L and "ストップ高引け" not in L
+    assert "長い上ヒゲ" in L
 
 
-def test_box_and_dryup_and_low_liquidity():
-    bars = [_bar(f"2026-09-{i+1:02d}", 100, 100.5, 99.5, 100, 1_000) for i in range(11)]
-    bars.append(_bar("2026-09-12", 100, 100.5, 99.5, 100, 300))
-    _, labels = compute(bars)
-    assert "保ち合い" in labels
-    assert "出来高枯れ" in labels
-    assert "低流動性" in labels
-    assert "値幅小" in labels
+def test_unknown_when_history_short():
+    """足が足りない指標は None のまま残し、ラベルを付けない(不明と該当なしを区別する)。"""
+    bars = _flat(8)
+    bars.append(_bar("d08", 500, 560, 500, 550, 100_000))
+    f, L = compute(bars)
+    assert f["ma20"] is None and f["vol_ratio20"] is None and f["new_high_20"] is None
+    assert not any(lb.startswith("20日") for lb in L)
+    assert "出来高急増" not in L  # 20 日平均が無いので判定しない
+    assert "5日高値更新" in L
 
 
-def test_one_month_labels_need_20_bars():
-    bars = _flat(21)
-    bars.append(_bar("2026-09-30", 500, 560, 500, 550, 100_000))
-    _, labels = compute(bars)
-    assert "ブレイク1か月" in labels
+def test_volume_gradual_increase_vs_spike():
+    bars = _flat(20, vol=100_000)
+    bars += [_bar(f"e{i}", 500, 505, 495, 500, v) for i, v in enumerate([140_000, 150_000, 160_000, 150_000, 160_000])]
+    bars.append(_bar("e5", 500, 505, 495, 500, 170_000))
+    _, L = compute(bars)
+    assert "出来高漸増" in L
+    bars[-1] = _bar("e5", 500, 505, 495, 500, 400_000)  # 直近 5 日に 3 倍超があれば漸増にしない
+    _, L = compute(bars)
+    assert "出来高漸増" not in L
+
+
+def test_candles_and_structure():
+    bars = _flat(20, price=480.0)
+    # 直近 5 日: 陰線 1 本のあと陽線 3 本。高値・安値とも前の 5 日より 1% 超上
+    bars += [_bar("x0", 500, 506, 499, 505, 100_000), _bar("x1", 506, 507, 500, 501, 100_000),
+             _bar("x2", 501, 510, 500, 509, 100_000), _bar("x3", 509, 514, 507, 513, 100_000),
+             _bar("x4", 513, 520, 511, 519, 100_000)]
+    _, L = compute(bars)
+    assert "高値切り上げ" in L and "安値切り上げ" in L
+    assert "陽線3本連続" in L
+    assert "陽線2本連続" not in L and "陽線4本以上連続" not in L  # 本数ラベルは該当する最長の 1 つだけ
 
 
 def test_evaluate_hit_day_and_final():
@@ -78,3 +95,50 @@ def test_evaluate_exact_target_counts_and_partial_window():
 def test_evaluate_no_bars_yet():
     r = evaluate(100.0, [])
     assert r["bars_tracked"] == 0 and r["hit"] is False and r["final"] is False
+
+
+def test_split_adjustment_prevents_false_failure():
+    from surge_radar.track import adjust_for_splits
+    # 2:1 分割が 3 日目に起きた。分割前の足は旧基準(1000 前後)、分割後は新基準(500 前後)
+    bars = [{"date": "d1", "high": 1010, "low": 990}, {"date": "d2", "high": 1020, "low": 1000},
+            {"date": "d3", "high": 610, "low": 500}]
+    p0, adj, note = adjust_for_splits(1000.0, "d0", bars, [{"date": "d3", "ratio": 2.0}])
+    assert p0 == 500.0 and adj[0]["high"] == 505.0 and adj[2]["high"] == 610
+    assert note and "d3" in note
+    r = evaluate(p0, adj)
+    assert r["hit"] is True and r["hit_day"] == 3  # 分割後 610 は 500×1.2 を超える
+    # 分割が無ければ何もしない
+    p0, adj, note = adjust_for_splits(1000.0, "d0", bars, [{"date": "c9", "ratio": 2.0}])
+    assert p0 == 1000.0 and note is None
+
+
+def test_material_window():
+    from datetime import datetime
+    from surge_radar.vocab import JST, window_status
+    tp = datetime(2026, 9, 28, 18, 5, tzinfo=JST)   # 前回の分析時刻
+    tn = datetime(2026, 9, 29, 18, 5, tzinfo=JST)   # 今回
+    at = lambda d, h, m: datetime.fromisoformat(f"{d}T{h:02d}:{m:02d}:00+09:00")
+    assert window_status(at("2026-09-28", 18, 10), "2026-09-28", tp, tn) == "new"
+    assert window_status(at("2026-09-28", 17, 0), "2026-09-28", tp, tn) == "background"
+    assert window_status(at("2026-09-29", 18, 30), "2026-09-29", tp, tn) == "after_t_now"
+    # 日付だけの見出し: T_prev より後の日なら新規、同じ日は時刻不明で新規に数えない
+    assert window_status(None, "2026-09-29", tp, tn) == "new"
+    assert window_status(None, "2026-09-28", tp, tn) == "time_unknown"
+    assert window_status(None, "2026-09-25", tp, tn) == "background"
+    # 前回分析日時不明: T_now と同じ日に公開されたものだけ暫定で新規
+    assert window_status(at("2026-09-29", 7, 0), "2026-09-29", None, tn) == "new"
+    assert window_status(at("2026-09-28", 23, 0), "2026-09-28", None, tn) == "background"
+    assert window_status(None, "2026-09-29", None, tn) == "new"
+
+
+def test_timing_axis():
+    from datetime import datetime
+    from surge_radar.vocab import JST, timing
+    at = lambda s: datetime.fromisoformat(s + "+09:00")
+    days = {"2026-09-24", "2026-09-25"}
+    assert timing(at("2026-09-25T08:30:00"), days) == "寄り前"
+    assert timing(at("2026-09-25T15:30:00"), days) == "市場時間中"
+    assert timing(at("2026-09-25T15:31:00"), days) == "引け後"
+    assert timing(at("2026-09-23T10:00:00"), days) == "非営業日"   # 平日の祝日(価格データのある期間内)
+    assert timing(at("2026-09-26T10:00:00"), days) == "非営業日"   # 土曜
+    assert timing(None, days) == "公開時刻不明"

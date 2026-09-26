@@ -32,6 +32,11 @@ def history(request: Request):
     return templates.TemplateResponse(request, "history.html", {"h": queries.history()})
 
 
+@app.get("/report", response_class=HTMLResponse)
+def report(request: Request, date: str):
+    return templates.TemplateResponse(request, "report.html", {"date": date, "rep": queries.report(date)})
+
+
 @app.get("/healthz")
 def healthz():
     return JSONResponse(jsonable_encoder(queries.health()))
