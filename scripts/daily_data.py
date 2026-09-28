@@ -4,7 +4,7 @@
   0. 営業日カレンダー(1306 の日足)を更新
   1. 全銘柄の日足を取得。前回から営業日が空いていれば、空いた分もまとめて取る
   2. 基準日(日足が揃っている最新の営業日)のスナップショットを作る
-  3. 全銘柄のニュース見出しを取得して保存
+  3. 全銘柄のニュース見出しを取得して保存。取得の成否を銘柄×配信元ごとに news_coverage へ記録
   4. 追跡中の候補の成否を更新
 
 使い方: python scripts/daily_data.py [--skip-prices] [--skip-news] [--limit N]
@@ -95,7 +95,7 @@ def main() -> None:
             since = news_since(bd)
             until = datetime.now().strftime("%Y-%m-%d")
             counts["news_window"] = [since, until]
-            counts["news"] = news.collect(snap_codes, since, until)
+            counts["news"] = news.collect(snap_codes, since, until, base_date=bd)
             print(f"[news] {json.dumps(counts['news'], ensure_ascii=False)}  "
                   f"{time.monotonic()-t0:.0f}s", flush=True)
 

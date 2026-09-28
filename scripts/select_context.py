@@ -8,7 +8,8 @@
   --labels A,B       指定ラベルをすべて持つ銘柄の一覧
 
 基準日は --date、省略時は最新のスナップショットの日付。
-Material Window は「基準日の終値の時刻(15:30) < 公開時刻 <= 分析開始(T_now)」(ユーザー決定 2026-09-26)。
+Material Window は「基準日の終値の時刻(15:30) <= 公開時刻 <= 分析開始(T_now)」(ユーザー決定 2026-09-26、
+15:30 ちょうどを含めたのは 2026-09-28)。
 T_prev(前回の正式な分析の時刻)は記録のために出すだけで、Window には使わない。
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import _boot  # noqa: F401
 
-from surge_radar import db
+from surge_radar import db, news as newsmod
 from surge_radar.vocab import JST, save_deadline, timing, window_start, window_status
 
 TMP = Path(__file__).resolve().parent.parent / "data" / "tmp"
@@ -111,6 +112,13 @@ def _fmt(v, k):
     return f"{v:.3f}"
 
 
+def _tally(values) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for v in values:
+        out[v] = out.get(v, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def _funnel_path(bd: str) -> Path:
     return TMP / f"funnel_{bd}.json"
 
@@ -131,6 +139,7 @@ def funnel(conn, bd: str) -> dict:
     snaps = conn.execute(
         """SELECT s.code, s.features, s.labels FROM snapshots s WHERE s.date = %s ORDER BY s.code""",
         (bd,)).fetchall()
+    cov = newsmod.coverage(conn, bd, [s["code"] for s in snaps])
     n_universe = conn.execute("SELECT COUNT(*) n FROM securities").fetchone()["n"]
     n_priced = conn.execute("SELECT COUNT(DISTINCT code) n FROM prices WHERE date=%s", (bd,)).fetchone()["n"]
 
@@ -144,7 +153,8 @@ def funnel(conn, bd: str) -> dict:
         rs = routes_for(set(s["labels"] or []), s["features"], s["code"] in newmat)
         for x in rs:
             route_counts[x] = route_counts.get(x, 0) + 1
-        scan.append({"code": s["code"], "routes": rs, "new_material_events": newmat.get(s["code"], [])})
+        scan.append({"code": s["code"], "routes": rs, "new_material_events": newmat.get(s["code"], []),
+                     "news_checked": newsmod.material_checked(cov["bulk"], cov["per_code"][s["code"]])})
 
     n_pages = (len(scan) + PAGE_SIZE - 1) // PAGE_SIZE
     doc = {
@@ -153,11 +163,18 @@ def funnel(conn, bd: str) -> dict:
         "t_prev": tp.isoformat(timespec="seconds") if tp else None,
         "save_deadline": save_deadline(bd).isoformat(timespec="minutes"),
         "material_window": {
-            "rule": "基準日の終値の時刻 < 公開時刻 <= T_now(分析開始)。日付だけの見出しは基準日より後の日付なら新規、"
+            "rule": "基準日の終値の時刻 <= 公開時刻 <= T_now(分析開始)。日付だけの見出しは基準日より後の日付なら新規、"
                     "基準日と同じ日なら終値の前か後か分からないので新規に数えない",
             "from": start.isoformat(timespec="seconds"),
             "to": tn.isoformat(timespec="seconds"),
             "codes_with_new_material": len(newmat)},
+        "news_coverage": {
+            "rule": "TDnet が取れていて、銘柄別ニュースを 1 サイト以上で取れた(0 件を含む)銘柄だけ「新規材料なし」と書ける。"
+                    "それ以外は「新規材料確認不能」(手動で確認した場合を除く)",
+            "bulk": cov["bulk"],
+            "per_source": {src: _tally(v.get(src) for v in cov["per_code"].values())
+                           for src in newsmod.PER_CODE_SOURCES},
+            "codes_unchecked": sum(1 for x in scan if not x["news_checked"])},
         "exclusion_range": {"trading_days": EXCLUDE_DAYS,
                             "since": ([d for d in days if d <= tn.strftime('%Y-%m-%d')][-EXCLUDE_DAYS:] or [None])[0]},
         "counts": {"universe_securities": n_universe, "priced_on_base_date": n_priced,
@@ -176,7 +193,8 @@ def funnel(conn, bd: str) -> dict:
     if tn >= save_deadline(bd):
         print(f"# 注意: 保存期限 {doc['save_deadline']}(翌営業日の寄り付き)を過ぎている。この基準日の候補は保存できない")
     print(json.dumps({k: doc[k] for k in ("base_date", "t_now", "t_prev", "save_deadline", "material_window",
-                                          "exclusion_range", "counts")}, ensure_ascii=False, indent=1))
+                                          "news_coverage", "exclusion_range", "counts")},
+                     ensure_ascii=False, indent=1))
     print(f"# 除外: {', '.join(e['code'] for e in excluded) or 'なし'}")
     new_codes = [x["code"] for x in scan if x["new_material_events"]]
     print(f"# 新規材料のある銘柄({len(new_codes)}): {', '.join(new_codes) or 'なし'}")
@@ -200,13 +218,15 @@ def page(conn, bd: str, n: int) -> None:
     snaps = {s["code"]: s for s in conn.execute(
         """SELECT s.code, s.features, c.name FROM snapshots s LEFT JOIN securities c ON c.code = s.code
            WHERE s.date = %s AND s.code = ANY(%s)""", (bd, codes)).fetchall()}
-    cols = ["code", "name", "routes", "new_mat", *COLS]
-    print(f"# base_date={bd} page {n}/{n_pages}  ({len(rows)} 銘柄)")
+    cols = ["code", "name", "routes", "new_mat", "news_ok", *COLS]
+    print(f"# base_date={bd} page {n}/{n_pages}  ({len(rows)} 銘柄)  "
+          f"news_ok=x は見出しを取れていない(新規材料の有無を確認できていない)")
     print("\t".join(cols))
     for r in rows:
         s = snaps[r["code"]]
         name = unicodedata.normalize("NFKC", s["name"] or "")[:12]
-        row = [r["code"], name, "".join(r["routes"]) or "-", str(len(r["new_material_events"]))]
+        row = [r["code"], name, "".join(r["routes"]) or "-", str(len(r["new_material_events"])),
+               "o" if r.get("news_checked") else "x"]
         row += [_fmt(s["features"].get(k), k) for k in COLS]
         print("\t".join(row))
     scan = json.loads(_scan_path(bd).read_text(encoding="utf-8"))
@@ -262,7 +282,11 @@ def one(conn, bd: str, code: str) -> dict:
     except Exception as e:  # 取れなければ不明として扱う
         meta = {"error": f"{type(e).__name__}", "note": "時価総額・発行済株式数は不明"}
     recent = recent_predictions(conn, days, tn)
+    cov = newsmod.coverage(conn, bd, [code])
+    news_cov = {"bulk": cov["bulk"], "per_source": cov["per_code"][code],
+                "material_checked": newsmod.material_checked(cov["bulk"], cov["per_code"][code])}
     return {"base_date": bd, "code": code, "security": sec,
+            "news_coverage": news_cov,
             "recently_predicted": recent.get(code),
             "label_version": snap["label_version"] if snap else None,
             "features": snap["features"] if snap else None,

@@ -3,6 +3,8 @@ Claude が選んだ候補とレポートを保存する(procedures/select.md の
 
 T_now・T_prev・Material Window・各段階の件数・除外一覧・ルートは data/tmp/funnel_<基準日>.json から取る。
 基準終値(P0)・Target・スナップショットのラベルと特徴量は DB から取る。
+見出しを取れていない銘柄(news_coverage)は「新規材料なし」にできない。「新規材料確認不能」にするか、
+手動で確認した内容(見たページ・時刻・結果)を material_manual_check に書く(2026-09-28)。
 同じ基準日の記録が既にあれば保存しない(選び直しで結果を差し替えられないようにする)。
 1 件でも誤りがあれば何も保存しない。候補 0 件も記録として保存する。
 
@@ -18,7 +20,7 @@ from pathlib import Path
 
 import _boot  # noqa: F401
 
-from surge_radar import db
+from surge_radar import db, news as newsmod
 from surge_radar.track import TARGET_RET
 from surge_radar.vocab import JST, save_deadline
 
@@ -71,6 +73,8 @@ def main() -> None:
             sys.exit(f"{bd} の記録は保存済み。差し替えはしない")
         snaps = {r["code"]: r for r in conn.execute(
             "SELECT code, close, features, labels FROM snapshots WHERE date=%s", (bd,)).fetchall()}
+        cov = newsmod.coverage(conn, bd, [str(c.get("code")) for c in cands])
+    covrec = {}
 
     seen = set()
     for c in cands:
@@ -103,6 +107,14 @@ def main() -> None:
                 errors.append(f"{tag}: 材料ありなのに material_analysis が空")
         elif ids:
             errors.append(f"{tag}: 材料なし・確認不能なのに material_event_ids がある")
+        checked = newsmod.material_checked(cov["bulk"], cov["per_code"][code])
+        manual = str(c.get("material_manual_check") or "").strip()
+        if st == "新規材料なし" and not checked and not manual:
+            got = {k: v for k, v in cov["per_code"][code].items()}
+            errors.append(f"{tag}: 見出しを取れていない(TDnet={cov['bulk'].get('tdnet')}, {got})のに「新規材料なし」。"
+                          "「新規材料確認不能」にするか、手動で確認した内容を material_manual_check に書く")
+        covrec[code] = {"bulk": cov["bulk"], "per_source": cov["per_code"][code],
+                        "checked": checked, "manual_check": manual or None}
         pats = c.get("chart_patterns")
         if not isinstance(pats, list):
             errors.append(f"{tag}: chart_patterns はリスト")
@@ -133,7 +145,7 @@ def main() -> None:
         print("\n".join(errors), file=sys.stderr)
         sys.exit(f"{len(errors)} 件にエラー。何も保存していない")
 
-    funnel_rec = {k: fun[k] for k in ("material_window", "exclusion_range", "counts")}
+    funnel_rec = {k: fun.get(k) for k in ("material_window", "news_coverage", "exclusion_range", "counts")}
     funnel_rec["stage2"] = doc.get("stage2")
     funnel_rec["pages_viewed"] = scan.get("pages_viewed")
     with db.cursor() as conn:
@@ -143,14 +155,15 @@ def main() -> None:
             conn.execute(
                 """INSERT INTO candidates(base_date,code,base_close,target,thesis,labels,features,procedure,
                        model,t_now,chart_patterns,supply,material_status,material_event_ids,
-                       material_analysis,teacher_match,post_surge_check,dilution,path,falsifiers,routes)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       material_analysis,teacher_match,post_surge_check,dilution,path,falsifiers,routes,
+                       material_coverage)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (bd, code, s["close"], s["close"] * (1 + TARGET_RET), c["thesis"], s["labels"],
                  db.j(s["features"]), doc.get("procedure", ""), a.model, fun["t_now"],
                  db.j(c.get("chart_patterns") or []), db.j(c.get("supply") or {}),
                  c["material_status"], c.get("material_event_ids") or [], c.get("material_analysis"),
                  c["teacher_match"], c["post_surge_check"], c["dilution"], db.j(c["path"]),
-                 db.j(c["falsifiers"]), stage1[code]["routes"]))
+                 db.j(c["falsifiers"]), stage1[code]["routes"], db.j(covrec[code])))
         conn.execute(
             """INSERT INTO selection_runs(base_date,procedure,pool_size,n_selected,notes,t_prev,t_now,
                                           funnel,exclusions,report)

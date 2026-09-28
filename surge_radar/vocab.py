@@ -61,7 +61,8 @@ def window_start(base_date: str) -> datetime:
 def window_status(pub: datetime | None, date: str, start: datetime, tn: datetime) -> str:
     """見出し 1 件が Material Window 内か。new / background / time_unknown / after_t_now。
 
-    Material Window: 基準日の終値の時刻(start) < 公開時刻 <= 分析開始(T_now) の見出しだけが新規材料。
+    Material Window: 基準日の終値の時刻(start) <= 公開時刻 <= 分析開始(T_now) の見出しだけが新規材料。
+    15:30 ちょうどの開示も含める(ユーザー指示「終値の時刻から」。2026-09-28 に境界を含むよう変更)。
     日付しか分からない見出しは、基準日より後の日付なら新規、基準日と同じ日なら終値の前か後か
     分からないので time_unknown(新規に数えない)、それより前は背景。
     """
@@ -70,7 +71,7 @@ def window_status(pub: datetime | None, date: str, start: datetime, tn: datetime
         pub = pub.astimezone(JST)
         if pub > tn:
             return "after_t_now"
-        return "new" if pub > start else "background"
+        return "new" if pub >= start else "background"
     if date > tn_date:
         return "after_t_now"
     s_date = start.strftime("%Y-%m-%d")

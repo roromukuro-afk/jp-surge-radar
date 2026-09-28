@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS news (
 CREATE INDEX IF NOT EXISTS news_title_key ON news (title_key);
 CREATE INDEX IF NOT EXISTS news_code_date ON news (code, date);
 
+-- 見出し取得の成否(基準日×配信元×銘柄)。TDnet・EDINET は一括取得なので code='*' の 1 行。
+-- status: ok / empty(取れたが 0 件) / http_403 などの失敗 / skipped_blocked(遮断が続き取りに行かなかった)
+-- 取れなかった銘柄を「新規材料なし」と書かせないために使う(2026-09-28)
+CREATE TABLE IF NOT EXISTS news_coverage (
+    base_date   TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    code        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    fetched_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (base_date, source, code)
+);
+
 CREATE TABLE IF NOT EXISTS news_reviews (
     title_key   TEXT PRIMARY KEY,
     subjects    TEXT[] NOT NULL DEFAULT '{}',
@@ -177,6 +189,7 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS dilution TEXT;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS path JSONB;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS falsifiers JSONB;
 ALTER TABLE candidates ADD COLUMN IF NOT EXISTS routes TEXT[];
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS material_coverage JSONB;
 ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS t_prev TIMESTAMPTZ;
 ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS t_now TIMESTAMPTZ;
 ALTER TABLE selection_runs ADD COLUMN IF NOT EXISTS funnel JSONB;

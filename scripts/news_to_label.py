@@ -1,7 +1,7 @@
 """
 未処理の見出しを、同じ見出しを 1 件にまとめて出力する(Claude の材料ラベル付け用。procedures/label.md)。
 
-Material Window 内(基準日の終値より後に公開)の見出しを先に出す。次に基準日で公開時刻が不明なもの、
+Material Window 内(基準日の終値の時刻以降に公開)の見出しを先に出す。次に基準日で公開時刻が不明なもの、
 最後にそれより前のもの。各グループ内は新しい日付から。
 
 株価・候補・成否は出さない(ラベルが値動きに引きずられないように)。
@@ -28,8 +28,8 @@ def main() -> None:
     with db.cursor() as conn:
         bd = conn.execute("SELECT MAX(date) d FROM snapshots").fetchone()["d"]
         start = window_start(bd)
-        # 優先度: 0 = Material Window 内(基準日の終値より後に公開)、1 = 基準日だが公開時刻不明、2 = それ以前
-        prio = """CASE WHEN MAX(n.published_at) > %(start)s OR MAX(n.date) > %(bd)s THEN 0
+        # 優先度: 0 = Material Window 内(基準日の終値の時刻以降に公開)、1 = 基準日だが公開時刻不明、2 = それ以前
+        prio = """CASE WHEN MAX(n.published_at) >= %(start)s OR MAX(n.date) > %(bd)s THEN 0
                        WHEN MAX(n.date) = %(bd)s AND MAX(n.published_at) IS NULL THEN 1 ELSE 2 END"""
         if a.count:
             rows = conn.execute(

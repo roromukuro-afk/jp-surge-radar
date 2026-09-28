@@ -134,7 +134,7 @@ def test_split_factor():
 
 
 def test_material_window():
-    """Window = 基準日の終値の時刻(15:30) < 公開時刻 <= 分析開始。終値より前の材料は P0 に織り込み済み。"""
+    """Window = 基準日の終値の時刻(15:30) <= 公開時刻 <= 分析開始。終値より前の材料は P0 に織り込み済み。"""
     from datetime import datetime
     from surge_radar.vocab import JST, window_start, window_status
     start = window_start("2026-09-25")                  # 金曜の大引け
@@ -142,7 +142,8 @@ def test_material_window():
     tn = datetime(2026, 9, 27, 10, 0, tzinfo=JST)       # 日曜 10:00 に分析開始
     at = lambda s: datetime.fromisoformat(s + "+09:00")
     assert window_status(at("2026-09-25T18:30:00"), "2026-09-25", start, tn) == "new"          # 金曜引け後の開示
-    assert window_status(at("2026-09-25T15:30:00"), "2026-09-25", start, tn) == "background"   # 大引けちょうどは含まない
+    assert window_status(at("2026-09-25T15:30:00"), "2026-09-25", start, tn) == "new"          # 大引けちょうども含む(2026-09-28、ユーザー指示「終値の時刻から」)
+    assert window_status(at("2026-09-25T15:29:00"), "2026-09-25", start, tn) == "background"   # 大引け前
     assert window_status(at("2026-09-25T11:00:00"), "2026-09-25", start, tn) == "background"   # 場中 → P0 に織り込み済み
     assert window_status(at("2026-09-26T09:00:00"), "2026-09-26", start, tn) == "new"          # 土曜
     assert window_status(at("2026-09-27T10:05:00"), "2026-09-27", start, tn) == "after_t_now"  # 分析開始より後
@@ -171,3 +172,50 @@ def test_save_deadline_is_next_weekday_open():
     from surge_radar.vocab import JST, save_deadline
     assert save_deadline("2026-09-25") == datetime(2026, 9, 28, 9, 0, tzinfo=JST)   # 金 → 月 9:00
     assert save_deadline("2026-09-28") == datetime(2026, 9, 29, 9, 0, tzinfo=JST)   # 月 → 火 9:00
+
+
+def test_fetch_per_code_records_failures_and_stops_on_block():
+    """取れなかった銘柄を 0 件(empty)と区別し、失敗が続いたら残りは取りに行かない(2026-09-28)。"""
+    from surge_radar.news import FetchFailed, _fetch_per_code
+    calls = []
+
+    def fake(code, session=None):
+        calls.append(code)
+        if code == "1001":
+            return [{"date": "2026-09-28", "title": "t"}]
+        if code == "1002":
+            return []
+        raise FetchFailed("http_403")
+
+    codes = ["1001", "1002"] + [f"2{i:03d}" for i in range(10)]
+    by_code, st = _fetch_per_code(codes, fake, "test", pause=0, stop_after=3)
+    assert list(by_code) == ["1001"]
+    assert st["1001"] == "ok" and st["1002"] == "empty"
+    assert [st[c] for c in codes[2:5]] == ["http_403"] * 3
+    assert all(st[c] == "skipped_blocked" for c in codes[5:])
+    assert calls == codes[:5]                      # 打ち切り後は 1 回も取りに行っていない
+
+
+def test_fetch_per_code_streak_resets_on_success():
+    from surge_radar.news import FetchFailed, _fetch_per_code
+    seq = iter(["x", "x", "ok", "x", "x", "ok"])
+
+    def fake(code, session=None):
+        if next(seq) == "x":
+            raise FetchFailed("http_429")
+        return []
+
+    _, st = _fetch_per_code([str(i) for i in range(6)], fake, "test", pause=0, stop_after=3)
+    assert "skipped_blocked" not in st.values()
+
+
+def test_material_checked():
+    """「新規材料なし」と書けるのは TDnet が取れて、銘柄別ニュースが 1 サイト以上取れた(0 件を含む)とき。"""
+    from surge_radar.news import material_checked
+    ok_bulk = {"tdnet": "ok", "edinet": "ok"}
+    blocked = {"kabutan": "http_403", "yahoojp": "skipped_blocked", "nikkei": "error_Timeout",
+               "minkabu": "not_recorded"}
+    assert material_checked(ok_bulk, {**blocked, "nikkei": "empty"}) is True
+    assert material_checked(ok_bulk, blocked) is False
+    assert material_checked({"tdnet": "error_RuntimeError"}, {**blocked, "kabutan": "ok"}) is False
+    assert material_checked({"tdnet": "not_recorded"}, {"kabutan": "ok"}) is False

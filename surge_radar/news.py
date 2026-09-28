@@ -42,9 +42,14 @@ def _published(date_str: str, raw: str | None) -> str | None:
         return None
     return f"{date_str}T{hh:02d}:{mm:02d}:00+09:00"
 
-_kabutan_logged_error = False
+class FetchFailed(Exception):
+    """銘柄別ページの取得に失敗した(HTTP 200 以外・通信エラー・ページ解析の例外)。
+    「見出しが 0 件だった」と区別するために使う(2026-09-28: 遮断された銘柄が「材料なし」に
+    見えていた)。status は http_403 / http_429 / error_<例外名> など。"""
 
-_minkabu_logged_error = False
+    def __init__(self, status: str):
+        super().__init__(status)
+        self.status = status
 
 
 
@@ -203,16 +208,13 @@ def fetch_edinet_docs(date: str) -> dict[str, list[dict]]:
     # 未設定ならスキップ (キーが無いと 401 で0件になるため理由を明示)。
     api_key = os.environ.get("EDINET_API_KEY", "").strip()
     if not api_key:
-        print(f"    [EDINET] skipped {date}: EDINET_API_KEY 未設定 "
-              f"(https://api.edinet-fsa.go.jp で無料取得し環境変数に設定)")
-        return {}
+        raise RuntimeError("EDINET_API_KEY 未設定")
 
     params = {"date": date, "type": 2, "Subscription-Key": api_key}
     data = _get_json(EDINET_API, params, retries=3, timeout=30, base_pause=1.5)
     if not data or data.get("StatusCode") not in (None, 200):
         msg = (data or {}).get("message", "no data")
-        print(f"    [EDINET] fetch failed for {date}: {str(msg)[:80]}")
-        return {}
+        raise RuntimeError(f"EDINET の取得に失敗 {date}: {str(msg)[:80]}")
 
     by_code: dict[str, list[dict]] = {}
     for doc in data.get("results", []):
@@ -252,11 +254,10 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
     session: 渡された場合は接続を使い回す(TCP/TLSハンドシェイクの
     再確立を避け、バッチ取得を大幅に高速化する。2026-08-22追加)。
     """
-    global _kabutan_logged_error
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        return []
+        raise FetchFailed("error_no_bs4")
     url = f"https://kabutan.jp/stock/news?code={code}"
     client = session or requests
     try:
@@ -266,11 +267,7 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
         if r.status_code != 200:
-            if not _kabutan_logged_error:
-                _kabutan_logged_error = True
-                print(f"    [kabutan] DIAG non-200: code={code} status={r.status_code} "
-                      f"len={len(r.text)} body_head={r.text[:200]!r}", flush=True)
-            return []
+            raise FetchFailed(f"http_{r.status_code}")
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
@@ -317,11 +314,10 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
                 "published_at": _published(date_str, date_raw),
             })
         return out
+    except FetchFailed:
+        raise
     except Exception as e:
-        if not _kabutan_logged_error:
-            _kabutan_logged_error = True
-            print(f"    [kabutan] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
-        return []
+        raise FetchFailed(f"error_{type(e).__name__}") from e
 
 
 
@@ -336,11 +332,10 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
     日付形式: "今日 08:30" または "08/21 16:35" (MM/DD HH:MM、年は現在年basis)。
     session: 渡された場合は接続を使い回す(2026-08-22追加、高速化目的)。
     """
-    global _minkabu_logged_error
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        return []
+        raise FetchFailed("error_no_bs4")
     url = f"https://minkabu.jp/stock/{code}/news"
     client = session or requests
     try:
@@ -349,11 +344,7 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
         if r.status_code != 200:
-            if not _minkabu_logged_error:
-                _minkabu_logged_error = True
-                print(f"    [minkabu] DIAG non-200: code={code} status={r.status_code} "
-                      f"len={len(r.text)} body_head={r.text[:200]!r}", flush=True)
-            return []
+            raise FetchFailed(f"http_{r.status_code}")
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
@@ -396,11 +387,10 @@ def fetch_minkabu_news(code: str, max_items: int = 15, session=None) -> list[dic
                 "published_at": _published(date_str, time_text),
             })
         return out
+    except FetchFailed:
+        raise
     except Exception as e:
-        if not _minkabu_logged_error:
-            _minkabu_logged_error = True
-            print(f"    [minkabu] DIAG exception: code={code} {type(e).__name__}: {str(e)[:200]}", flush=True)
-        return []
+        raise FetchFailed(f"error_{type(e).__name__}") from e
 
 
 
@@ -418,7 +408,7 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20, session=None) -> list[di
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        return []
+        raise FetchFailed("error_no_bs4")
     url = f"https://finance.yahoo.co.jp/quote/{code}.T/news"
     client = session or requests
     try:
@@ -427,7 +417,7 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20, session=None) -> list[di
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
         if r.status_code != 200:
-            return []
+            raise FetchFailed(f"http_{r.status_code}")
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
@@ -468,8 +458,10 @@ def fetch_yahoo_jp_news(code: str, max_items: int = 20, session=None) -> list[di
                 "published_at": _published(date_str, time_text),
             })
         return out
-    except Exception:
-        return []
+    except FetchFailed:
+        raise
+    except Exception as e:
+        raise FetchFailed(f"error_{type(e).__name__}") from e
 
 
 
@@ -520,7 +512,7 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        return []
+        raise FetchFailed("error_no_bs4")
     url = f"https://www.nikkei.com/nkd/company/news/?scode={code}"
     client = session or requests
     try:
@@ -529,7 +521,7 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
             "Accept-Language": "ja-JP,ja;q=0.9",
         })
         if r.status_code != 200:
-            return []
+            raise FetchFailed(f"http_{r.status_code}")
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
@@ -554,59 +546,58 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
             out.append({"date": date_str, "title": title, "url": href, "source": "nikkei",
                         "published_at": _published(date_str, time_text)})
         return out
-    except Exception:
-        return []
+    except FetchFailed:
+        raise
+    except Exception as e:
+        raise FetchFailed(f"error_{type(e).__name__}") from e
 
 
 
-def _fetch_batch_concurrent(codes: list[str], fetch_fn, max_codes: int, label: str,
-                            pause: float = 0.5, max_workers: int = 3) -> dict[str, list[dict]]:
+def _fetch_per_code(codes: list[str], fetch_fn, label: str, pause: float = 1.0,
+                    stop_after: int = 20) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    """銘柄ごとの見出しを 1 サイトにつき 1 本ずつ、pause 秒以上空けて取る。
+
+    戻り値: (銘柄 -> 見出し, 銘柄 -> 取得状態)。取得状態は
+      ok(見出しあり) / empty(ページは取れたが見出し 0 件) / http_403 などの失敗 /
+      skipped_blocked(失敗が stop_after 回続いたので、それ以降は取りに行かなかった)
+    2026-09-28: 旧版は 1 サイト 3 並列・0.5 秒間隔で、失敗を空の結果として返していたため、
+    みんかぶの 403 やYahooの途中からの遮断が「その銘柄に材料が無い」と区別できなかった。
+    失敗が続いたら取りに行くのをやめるのは、遮断をさらに長引かせないため。
     """
-    銘柄ごとの見出し取得を軽度に並列化する共通ヘルパー。
-
-    1サイトあたり同時3接続程度は通常のブラウザ閲覧と同程度で、各サイトへの
-    リクエスト頻度を過度に上げずに全体スループットを約3倍にできる
-    (2026-08-22: 3000円以下の全銘柄~2700をGitHub Actionsの1ジョブ上限
-    6時間以内に一巡させるための高速化)。ワーカーごとにリクエスト後 pause
-    秒待つことで、単純に全並列で叩くよりは礼儀を保つ。
-
-    requests.Session() で接続を使い回す(2026-08-22追加): これまで
-    requests.get() を毎回単独で呼んでおり、同じサイトへの2件目以降の
-    リクエストでもTCP/TLSハンドシェイクを毎回やり直していた。実データ
-    200銘柄での検証で1銘柄あたり実測18秒(小規模ベンチマークの8倍)と
-    大幅に遅かった原因の有力候補。HTTPAdapterでプール上限をmax_workers
-    以上に設定し、ワーカー間でSessionを共有してkeep-aliveを効かせる。
-    """
-    from concurrent.futures import ThreadPoolExecutor
-    from requests.adapters import HTTPAdapter
-
-    targets = codes[:max_codes]
     by_code: dict[str, list[dict]] = {}
-    if not targets:
-        return by_code
-
+    status: dict[str, str] = {}
     session = requests.Session()
-    adapter = HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
-    def _worker(code: str):
-        items = fetch_fn(code, session=session)
-        time.sleep(pause)
-        return code, items
-
-    done = 0
+    streak = 0
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            for code, items in ex.map(_worker, targets):
-                done += 1
+        for i, code in enumerate(codes):
+            if streak >= stop_after:
+                for rest in codes[i:]:
+                    status[rest] = "skipped_blocked"
+                print(f"    [{label}] 失敗が {stop_after} 回続いたので打ち切り "
+                      f"({len(codes) - i} 銘柄は未取得)", flush=True)
+                break
+            try:
+                items = fetch_fn(code, session=session)
+                streak = 0
+                status[code] = "ok" if items else "empty"
                 if items:
                     by_code[code] = items
-                if done % 50 == 0:
-                    print(f"    [{label}] {done}/{len(targets)} done, {len(by_code)} with news", flush=True)
+            except FetchFailed as e:
+                streak += 1
+                status[code] = e.status
+            time.sleep(pause)
+            if (i + 1) % 200 == 0:
+                print(f"    [{label}] {i + 1}/{len(codes)} {_tally(status)}", flush=True)
     finally:
         session.close()
-    return by_code
+    return by_code, status
+
+
+def _tally(status: dict[str, str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for v in status.values():
+        out[v] = out.get(v, 0) + 1
+    return dict(sorted(out.items()))
 
 
 
@@ -644,15 +635,34 @@ def store(by_code: dict[str, list[dict]], since: str, until: str,
     return after - before
 
 
-def collect(codes: list[str], since: str, until: str) -> dict:
-    """全銘柄の見出しを全ソースから取得して保存する。ソースごとの件数を返す。"""
+OK_STATUSES = ("ok", "empty")
+PER_CODE_SOURCES = ("kabutan", "yahoojp", "nikkei", "minkabu")
+
+
+def store_coverage(base_date: str, rows: list[tuple[str, str, str]]) -> None:
+    """取得の成否を news_coverage に保存する。rows = [(source, code, status)]。
+    同じ基準日で取り直したとき、前に取れていた銘柄を失敗で上書きしない。"""
+    if not rows:
+        return
+    with db.cursor() as conn:
+        conn.executemany(
+            """INSERT INTO news_coverage(base_date,source,code,status) VALUES(%s,%s,%s,%s)
+               ON CONFLICT(base_date,source,code) DO UPDATE
+                 SET status=EXCLUDED.status, fetched_at=now()
+                 WHERE EXCLUDED.status IN ('ok','empty') OR news_coverage.status NOT IN ('ok','empty')""",
+            [(base_date, src, code, st) for src, code, st in rows])
+
+
+def collect(codes: list[str], since: str, until: str, base_date: str | None = None) -> dict:
+    """全銘柄の見出しを全ソースから取得して保存する。ソースごとの件数と取得状態の内訳を返す。
+    base_date を渡すと、取得の成否を news_coverage に記録する。"""
     from concurrent.futures import ThreadPoolExecutor
 
     codeset = set(codes)
     days = (datetime.strptime(until, "%Y-%m-%d") - datetime.strptime(since, "%Y-%m-%d")).days
 
     def _tdnet():
-        return fetch_tdnet_range(since, until)
+        return fetch_tdnet_range(since, until), None
 
     def _edinet():
         merged: dict[str, list[dict]] = {}
@@ -660,27 +670,61 @@ def collect(codes: list[str], since: str, until: str) -> dict:
             ds = (datetime.strptime(since, "%Y-%m-%d") + timedelta(days=d)).strftime("%Y-%m-%d")
             for code, items in fetch_edinet_docs(ds).items():
                 merged.setdefault(code, []).extend(items)
-        return merged
+        return merged, None
 
-    per_code = {
+    fetchers = {
+        "kabutan": fetch_kabutan_news,
         "yahoojp": fetch_yahoo_jp_news,
         "nikkei": fetch_nikkei_news,
-        "kabutan": fetch_kabutan_news,
         "minkabu": fetch_minkabu_news,
     }
     jobs = {"tdnet": _tdnet, "edinet": _edinet}
-    for name, fn in per_code.items():
-        jobs[name] = (lambda fn=fn, name=name:
-                      _fetch_batch_concurrent(codes, fn, len(codes), name))
+    for name, fn in fetchers.items():
+        # サイトが違えば同時に取ってよい。1 サイトの中は 1 本ずつ(_fetch_per_code)
+        jobs[name] = (lambda fn=fn, name=name: _fetch_per_code(codes, fn, name))
 
     counts: dict[str, dict] = {}
+    cov: list[tuple[str, str, str]] = []
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         futs = {name: ex.submit(fn) for name, fn in jobs.items()}
         for name, fut in futs.items():
             try:
-                by_code = fut.result()
+                by_code, status = fut.result()
                 counts[name] = {"codes": len(by_code),
                                 "stored": store(by_code, since, until, codeset)}
+                if status is None:
+                    cov.append((name, "*", "ok"))
+                else:
+                    counts[name]["status"] = _tally(status)
+                    cov.extend((name, c, st) for c, st in status.items())
             except Exception as e:  # 1 ソースの失敗で全体を止めない。記録は残す
                 counts[name] = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+                cov.append((name, "*", f"error_{type(e).__name__}"))
+    if base_date:
+        store_coverage(base_date, cov)
     return counts
+
+
+def coverage(conn, base_date: str, codes: list[str] | None = None) -> dict:
+    """基準日の取得状況。{"bulk": {source: status}, "per_code": {code: {source: status}}}。
+    記録の無い配信元は not_recorded。"""
+    rows = conn.execute("SELECT source, code, status FROM news_coverage WHERE base_date=%s",
+                        (base_date,)).fetchall()
+    bulk = {"tdnet": "not_recorded", "edinet": "not_recorded"}
+    per: dict[str, dict[str, str]] = {}
+    for r in rows:
+        if r["code"] == "*":
+            bulk[r["source"]] = r["status"]
+        elif codes is None or r["code"] in codes:
+            per.setdefault(r["code"], {})[r["source"]] = r["status"]
+    for c in (codes or per.keys()):
+        d = per.setdefault(c, {})
+        for src in PER_CODE_SOURCES:
+            d.setdefault(src, "not_recorded")
+    return {"bulk": bulk, "per_code": per}
+
+
+def material_checked(bulk: dict[str, str], per_code: dict[str, str]) -> bool:
+    """「新規材料なし」と言える取得状況か。TDnet が取れていて、銘柄別のニュースを
+    少なくとも 1 サイトで取れた(0 件を含む)こと。満たさなければ「新規材料確認不能」。"""
+    return bulk.get("tdnet") == "ok" and any(per_code.get(s) in OK_STATUSES for s in PER_CODE_SOURCES)
