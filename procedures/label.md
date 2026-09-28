@@ -18,7 +18,7 @@
 
 1. `.venv\Scripts\python.exe scripts\news_to_label.py --limit 200` を実行する。
    同じ見出しは 1 件にまとめられ、紐付いた銘柄の一覧(`linked`)が付いて出てくる。
-   Material Window 内(基準日の終値より後に公開)の見出しが先に出る。**Window 内の見出しは、その日のうちに
+   Material Window 内(基準日の終値の時刻以降に公開)の見出しが先に出る。**Window 内の見出しは、その日のうちに
    すべて処理してから候補選定に進む**(`--count` の `in_material_window` が 0 になるまで)。
 2. 見出しごとに判断する。
    - **subjects(主語の銘柄)**: 見出しが実際に扱っている会社のコードを `linked` の中から選ぶ。
