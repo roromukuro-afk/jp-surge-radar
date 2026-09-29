@@ -62,13 +62,17 @@ def load() -> list[dict]:
         ev = {}
         ids = [i for r in rows for i in (r["material_event_ids"] or [])]
         if ids:
-            for e in conn.execute("SELECT id, event_type FROM material_events WHERE id = ANY(%s)",
-                                  (ids,)).fetchall():
-                ev[e["id"]] = e["event_type"]
+            for e in conn.execute("SELECT id, event_type, actor, pathways, stage FROM material_events "
+                                  "WHERE id = ANY(%s)", (ids,)).fetchall():
+                ev[e["id"]] = e
     for r in rows:
         feats = set(r["labels"] or [])
         feats |= {f"形:{p['label']}" for p in (r["chart_patterns"] or []) if p.get("label")}
-        feats |= {f"材料:{ev[i]}" for i in (r["material_event_ids"] or []) if i in ev}
+        for i in r["material_event_ids"] or []:
+            if i in ev:  # 材料イベントの 6 軸(公開タイミング・影響範囲以外)も特徴にする(2026-09-29)
+                e = ev[i]
+                feats |= {f"材料:{e['event_type']}", f"材料段階:{e['stage']}", f"材料主体:{e['actor']}"}
+                feats |= {f"材料経路:{x}" for x in (e["pathways"] or [])}
         feats.add(f"材料状態:{r['material_status']}")
         feats |= {f"ルート:{x}" for x in (r["routes"] or [])}
         r["feats"] = feats

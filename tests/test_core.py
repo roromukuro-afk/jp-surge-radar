@@ -244,3 +244,18 @@ def test_nikkei_page_without_list_is_failure(monkeypatch):
     page = ('<ul><li class="m-listFormat_item"><span class="m-listItem_time">9/15更新</span>'
             '<div class="m-listItem_text_text"><a href="/a">t</a></div></li></ul>')
     assert news.fetch_nikkei_news("6533", session=S(page)) == []
+
+
+def test_label_groups_clustering():
+    """ラベルの重なりだけでまとめる(成否は使わない)。似た集合は同じグループ、離れた集合は別。"""
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    from label_groups import clusters, jaccard_distance, rate_range
+    a = frozenset({"上昇トレンド", "20日高値更新", "出来高急増", "大陽線"})
+    b = frozenset({"上昇トレンド", "20日高値更新", "出来高急増", "陽線2本連続"})
+    c = frozenset({"横ばい", "材料状態:あり", "材料:M&A・事業再編"})
+    assert jaccard_distance(a, a) == 0 and jaccard_distance(a, c) == 1
+    g = clusters([a, b, c])
+    assert g[0] == g[1] != g[2]
+    assert clusters([a]) == [0]
+    assert rate_range({"success": 1, "failure": 1, "tracking": 2, "unverified": 5}) == "25%〜75%"
