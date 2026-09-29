@@ -272,6 +272,8 @@ def fetch_kabutan_news(code: str, max_items: int = 10, session=None) -> list[dic
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
         now = datetime.now()
+        if soup.select_one(".s_news_list") is None:
+            raise FetchFailed("no_list")  # 想定したページでない(一覧の枠が無い)。0 件と区別する
         for row in soup.select(".s_news_list tr")[:max_items]:
             a = row.find("a")
             time_el = row.find(class_="news_time")
@@ -526,7 +528,13 @@ def fetch_nikkei_news(code: str, max_items: int = 20, session=None) -> list[dict
         soup = BeautifulSoup(r.text, "html.parser")
         out = []
         now = datetime.now()
-        for li in soup.select("li.m-listFormat_item")[:max_items]:
+        rows = soup.select("li.m-listFormat_item")
+        if not rows:
+            # 2026-09-29: 長時間の連続取得中、一覧の無いページ(HTTP 200)が返り、2,849 銘柄が
+            # 「0 件」と記録された(同じ銘柄を後で取ると見出しがあった)。日経の銘柄ページは
+            # 過去の記事も並ぶので一覧が空になることはまず無い。一覧が無ければ取得失敗として扱う
+            raise FetchFailed("no_list")
+        for li in rows[:max_items]:
             a = li.select_one(".m-listItem_text_text a")
             if not a:
                 continue

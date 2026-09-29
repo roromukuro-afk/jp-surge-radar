@@ -219,3 +219,28 @@ def test_material_checked():
     assert material_checked(ok_bulk, blocked) is False
     assert material_checked({"tdnet": "error_RuntimeError"}, {**blocked, "kabutan": "ok"}) is False
     assert material_checked({"tdnet": "not_recorded"}, {"kabutan": "ok"}) is False
+
+
+def test_nikkei_page_without_list_is_failure(monkeypatch):
+    """一覧の無いページ(HTTP 200)を「0 件」と記録しない(2026-09-29 に 2,849 銘柄で起きた)。"""
+    import pytest
+    from surge_radar import news
+
+    class R:
+        status_code = 200
+        encoding = "utf-8"
+        def __init__(self, text): self.text = text
+
+    class S:
+        def __init__(self, text): self.t = text
+        def get(self, *a, **k): return R(self.t)
+
+    with pytest.raises(news.FetchFailed) as e:
+        news.fetch_nikkei_news("6533", session=S("<html><title>x</title><body></body></html>"))
+    assert e.value.status == "no_list"
+    with pytest.raises(news.FetchFailed):
+        news.fetch_kabutan_news("6533", session=S("<html><body>no table</body></html>"))
+    # 一覧はあるが保存できる見出しが無い(更新日時しか無い)ときは 0 件
+    page = ('<ul><li class="m-listFormat_item"><span class="m-listItem_time">9/15更新</span>'
+            '<div class="m-listItem_text_text"><a href="/a">t</a></div></li></ul>')
+    assert news.fetch_nikkei_news("6533", session=S(page)) == []
