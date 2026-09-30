@@ -63,6 +63,13 @@ def main() -> None:
         unread = [p for p in range(1, fun["counts"]["pages"] + 1) if str(p) not in scan["pages_viewed"]]
         if unread:
             errors.append(f"第 1 段階の表で読んでいないページがある: {unread}(select_context.py --page N)")
+        # 候補を決めた後に記録だけを作っていないか(2026-09-30 に起きた)。ページは候補ファイルより前に読む
+        written = datetime.fromtimestamp(Path(a.path).stat().st_mtime, JST)
+        late = sorted((p for p, t in scan["pages_viewed"].items()
+                       if datetime.fromisoformat(t) > written), key=int)
+        if late:
+            errors.append(f"候補ファイルを書いた後に読んだことになっているページがある: {late}。"
+                          "第 1 段階の表は候補を決める前に読む")
     if not isinstance(cands, list):
         errors.append("candidates はリスト(0 件なら [])")
         cands = []

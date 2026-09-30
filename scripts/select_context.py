@@ -299,13 +299,27 @@ def main() -> None:
     ap.add_argument("--date")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--funnel", action="store_true")
+    g.add_argument("--redo-funnel", action="store_true",
+                   help="作り直す(T_now が変わり、第 1 段階の既読記録は空になる。全ページを読み直すこと)")
     g.add_argument("--page", type=int, help="第 1 段階の表の N ページ目(1 始まり)")
     g.add_argument("--labels")
     g.add_argument("--code")
     a = ap.parse_args()
     with db.cursor() as conn:
         bd = base_date(conn, a.date)
-        if a.funnel:
+        if a.funnel and _funnel_path(bd).exists():
+            # 2026-09-30: 作り直すと既読記録が消え、候補を決めた後にページを出力し直して記録だけを
+            # 埋める形になった。同じ基準日の 2 回目は作り直さず、前回の内容を出すだけにする
+            doc = json.loads(_funnel_path(bd).read_text(encoding="utf-8"))
+            scan = json.loads(_scan_path(bd).read_text(encoding="utf-8")) if _scan_path(bd).exists() else {}
+            print(f"# {bd} の --funnel は作成済み(T_now {doc['t_now']})。作り直していない。"
+                  f"既読ページ: {sorted(scan.get('pages_viewed', {}), key=int)}")
+            print(json.dumps({k: doc.get(k) for k in ("base_date", "t_now", "t_prev", "save_deadline", "material_window",
+                                                      "news_coverage", "exclusion_range", "counts")},
+                             ensure_ascii=False, indent=1))
+            print("# 作り直す必要があるときだけ --redo-funnel(既読記録は空になり、全ページを読み直す)")
+            return
+        if a.funnel or a.redo_funnel:
             funnel(conn, bd)
             return
         if a.page:
