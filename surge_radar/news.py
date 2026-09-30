@@ -644,7 +644,8 @@ def store(by_code: dict[str, list[dict]], since: str, until: str,
 
 
 OK_STATUSES = ("ok", "empty")
-PER_CODE_SOURCES = ("kabutan", "yahoojp", "nikkei", "minkabu")
+# みんかぶは 2026-09-28〜30 の 3 日続けてこのPCから全銘柄 403 のため取得をやめた(関数は残す)
+PER_CODE_SOURCES = ("kabutan", "yahoojp", "nikkei")
 
 
 def store_coverage(base_date: str, rows: list[tuple[str, str, str]]) -> None:
@@ -661,9 +662,16 @@ def store_coverage(base_date: str, rows: list[tuple[str, str, str]]) -> None:
             [(base_date, src, code, st) for src, code, st in rows])
 
 
-def collect(codes: list[str], since: str, until: str, base_date: str | None = None) -> dict:
+NIKKEI_PAUSE = 3.0
+
+
+def collect(codes: list[str], since: str, until: str, base_date: str | None = None,
+            nikkei_codes: list[str] | None = None) -> dict:
     """全銘柄の見出しを全ソースから取得して保存する。ソースごとの件数と取得状態の内訳を返す。
-    base_date を渡すと、取得の成否を news_coverage に記録する。"""
+    base_date を渡すと、取得の成否を news_coverage に記録する。
+    日経は nikkei_codes だけを NIKKEI_PAUSE 秒間隔で取る(None なら全銘柄)。2026-09-29・30 に 1 秒間隔だと
+    約 40 銘柄で一覧の無いページが返るようになり、10/1 の試験では 3 秒間隔で 100 銘柄すべて取れた。
+    全銘柄を 3 秒間隔で取ると約 2 時間 40 分かかるため、その日に動いた銘柄に絞る。"""
     from concurrent.futures import ThreadPoolExecutor
 
     codeset = set(codes)
@@ -680,16 +688,16 @@ def collect(codes: list[str], since: str, until: str, base_date: str | None = No
                 merged.setdefault(code, []).extend(items)
         return merged, None
 
-    fetchers = {
-        "kabutan": fetch_kabutan_news,
-        "yahoojp": fetch_yahoo_jp_news,
-        "nikkei": fetch_nikkei_news,
-        "minkabu": fetch_minkabu_news,
+    fetchers = {  # 配信元 -> (取得関数, 対象銘柄, 間隔秒)
+        "kabutan": (fetch_kabutan_news, codes, 1.0),
+        "yahoojp": (fetch_yahoo_jp_news, codes, 1.0),
+        "nikkei": (fetch_nikkei_news, codes if nikkei_codes is None else nikkei_codes, NIKKEI_PAUSE),
     }
     jobs = {"tdnet": _tdnet, "edinet": _edinet}
-    for name, fn in fetchers.items():
+    for name, (fn, targets, pause) in fetchers.items():
         # サイトが違えば同時に取ってよい。1 サイトの中は 1 本ずつ(_fetch_per_code)
-        jobs[name] = (lambda fn=fn, name=name: _fetch_per_code(codes, fn, name))
+        jobs[name] = (lambda fn=fn, name=name, targets=targets, pause=pause:
+                      _fetch_per_code(targets, fn, name, pause=pause))
 
     counts: dict[str, dict] = {}
     cov: list[tuple[str, str, str]] = []

@@ -95,7 +95,15 @@ def main() -> None:
             since = news_since(bd)
             until = datetime.now().strftime("%Y-%m-%d")
             counts["news_window"] = [since, until]
-            counts["news"] = news.collect(snap_codes, since, until, base_date=bd)
+            # 日経は基準日に動いた銘柄だけ(1日の騰落 ±5% 以上か、出来高が 20 日平均の 2 倍以上)。news.collect の説明を参照
+            with db.cursor() as conn:
+                nikkei_codes = [r["code"] for r in conn.execute(
+                    """SELECT code FROM snapshots WHERE date=%s
+                       AND (abs((features->>'ret_1d')::float) >= 0.05
+                            OR (features->>'vol_ratio20')::float >= 2.0)""", (bd,)).fetchall()
+                    if r["code"] in set(snap_codes)]
+            counts["nikkei_targets"] = len(nikkei_codes)
+            counts["news"] = news.collect(snap_codes, since, until, base_date=bd, nikkei_codes=nikkei_codes)
             print(f"[news] {json.dumps(counts['news'], ensure_ascii=False)}  "
                   f"{time.monotonic()-t0:.0f}s", flush=True)
 

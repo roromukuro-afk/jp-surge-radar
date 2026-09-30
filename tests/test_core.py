@@ -259,3 +259,21 @@ def test_label_groups_clustering():
     assert g[0] == g[1] != g[2]
     assert clusters([a]) == [0]
     assert rate_range({"success": 1, "failure": 1, "tracking": 2, "unverified": 5}) == "25%〜75%"
+
+
+def test_collect_nikkei_only_targets(monkeypatch):
+    """日経は渡された銘柄だけ、他の配信元は全銘柄を取りに行く(DB には書かない)。"""
+    from surge_radar import news
+    seen = {"kabutan": [], "yahoojp": [], "nikkei": []}
+    for name, attr in (("kabutan", "fetch_kabutan_news"), ("yahoojp", "fetch_yahoo_jp_news"),
+                       ("nikkei", "fetch_nikkei_news")):
+        monkeypatch.setattr(news, attr, lambda code, session=None, n=name: seen[n].append(code) or [])
+    monkeypatch.setattr(news, "fetch_tdnet_range", lambda s, u: {})
+    monkeypatch.setattr(news, "fetch_edinet_docs", lambda d: {})
+    monkeypatch.setattr(news, "store", lambda *a, **k: 0)
+    monkeypatch.setattr(news, "NIKKEI_PAUSE", 0)
+    monkeypatch.setattr(news.time, "sleep", lambda s: None)
+    out = news.collect(["1001", "1002", "1003"], "2026-09-30", "2026-09-30", nikkei_codes=["1002"])
+    assert seen["kabutan"] == seen["yahoojp"] == ["1001", "1002", "1003"]
+    assert seen["nikkei"] == ["1002"]
+    assert "minkabu" not in out
