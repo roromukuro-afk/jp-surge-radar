@@ -277,3 +277,12 @@ def test_collect_nikkei_only_targets(monkeypatch):
     assert seen["kabutan"] == seen["yahoojp"] == ["1001", "1002", "1003"]
     assert seen["nikkei"] == ["1002"]
     assert "minkabu" not in out
+
+
+def test_calendar_from_prices_sql_shape():
+    """1306 が欠けても、1,000 銘柄以上の日足がある日を営業日に加える関数がある(DB は使わない形の確認)。"""
+    import inspect
+    from surge_radar import market_calendar
+    src = inspect.getsource(market_calendar.add_from_prices)
+    assert "HAVING COUNT(*) >= %s" in src and "'prices'" in src
+    assert market_calendar.MIN_CODES == 1000

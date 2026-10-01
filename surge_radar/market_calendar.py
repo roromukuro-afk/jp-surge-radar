@@ -5,7 +5,9 @@
 保存している株価に欠け(実行しなかった日・取得失敗)があっても、期間がずれて 11 営業日目以降を
 数えることがないようにする。
 
-営業日は TOPIX 連動 ETF(1306)の日足がある日とする。1306 は毎営業日売買がある。
+営業日は TOPIX 連動 ETF(1306)の日足がある日、または 1,000 銘柄以上の日足が保存されている日とする。
+2026-10-01 は Yahoo が 1306 などの ETF の日足を翌日未明になっても返さず、1306 だけに頼っていたため
+営業日カレンダーと基準日の更新が止まった。個別株の日足がそろっていれば営業日とみなす。
 """
 from __future__ import annotations
 
@@ -27,6 +29,22 @@ def refresh() -> dict:
                          [(d, REFERENCE_CODE) for d in dates])
         after = conn.execute("SELECT COUNT(*) n FROM market_days").fetchone()["n"]
     return {"latest": dates[-1], "added": after - before}
+
+
+MIN_CODES = 1000
+
+
+def add_from_prices(min_codes: int = MIN_CODES) -> list[str]:
+    """保存済みの日足が min_codes 銘柄以上ある日を営業日に加える(追加のみ)。加えた日を返す。"""
+    with db.cursor() as conn:
+        rows = conn.execute(
+            """SELECT p.date FROM prices p LEFT JOIN market_days m ON m.date = p.date
+               WHERE m.date IS NULL GROUP BY p.date HAVING COUNT(*) >= %s ORDER BY p.date""",
+            (min_codes,)).fetchall()
+        added = [r["date"] for r in rows]
+        conn.executemany("INSERT INTO market_days(date, source) VALUES(%s, 'prices') ON CONFLICT DO NOTHING",
+                         [(d,) for d in added])
+    return added
 
 
 def days() -> list[str]:

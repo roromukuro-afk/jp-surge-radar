@@ -80,6 +80,8 @@ def main() -> None:
             counts["prices"] = {k: r[k] for k in ("ok", "fail", "rows")}
             counts["prices"].update({"last_before": last, "missing_market_days": gap, "range": rng})
             print(f"[prices] {counts['prices']}  {time.monotonic()-t0:.0f}s", flush=True)
+            # 1306 に日足が無くても、個別株の日足がそろった日は営業日にする(2026-10-01 に 1306 だけ欠けた)
+            counts["calendar_from_prices"] = market_calendar.add_from_prices()
 
         bd = base_date()
         counts["base_date"] = bd
