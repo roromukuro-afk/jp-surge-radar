@@ -286,3 +286,16 @@ def test_calendar_from_prices_sql_shape():
     src = inspect.getsource(market_calendar.add_from_prices)
     assert "HAVING COUNT(*) >= %s" in src and "'prices'" in src
     assert market_calendar.MIN_CODES == 1000
+
+
+def test_price_limit_path():
+    """東証の制限値幅。9/29〜10/2 の報告にあった値と一致する(751→901、700→850、1586→1986、777→927)。"""
+    from surge_radar.price_limit import limit_width, path_to_target
+    assert [limit_width(x) for x in (99, 100, 499, 500, 699, 700, 999, 1000, 1999, 2999)] == \
+           [30, 50, 80, 100, 100, 150, 150, 300, 400, 500]
+    r = path_to_target(751)
+    assert r["next_day_upper"] == 901 and r["reachable_next_day"] is False   # Target 901.2 に 0.2 円届かない
+    assert r["day2_upper_if_limit_up_close"] == 1051 and r["reachable_by_day2"] is True
+    assert path_to_target(700)["next_day_upper"] == 850
+    assert path_to_target(1586)["next_day_upper"] == 1986
+    assert path_to_target(777)["next_day_upper"] == 927

@@ -238,8 +238,38 @@ def page(conn, bd: str, n: int) -> None:
 
 # ---------------- 1 銘柄 ----------------
 
-def one(conn, bd: str, code: str) -> dict:
+def jp_stats(bd: str, code: str) -> dict:
+    """時価総額・発行済株式数(Yahoo!ファイナンス日本版)。取れた値は基準日ごとにファイルへ残して使い回す。
+    取れなければ 5 秒待って 1 回だけ取り直す。それでも駄目なら「取得失敗」と分かる形で返す
+    (2026-10-02: 続けて取ると途中から拒否され、空の結果が「値が無い」に見えていた)。"""
+    import time
     from surge_radar.sources import yahoo
+    path = TMP / f"stats_{bd}.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        cache = {}
+    if code in cache:
+        return cache[code]
+    err = None
+    for attempt in range(2):
+        try:
+            meta = yahoo.fetch_jp_stats(code)
+            meta["fetched_at"] = datetime.now(JST).isoformat(timespec="minutes")
+            meta["note"] = ("Yahoo!ファイナンス日本版の表示値(asof は表示された基準日)。"
+                            "Float は取得していないので不明。ページはあったが読めなかった項目は含まない")
+            cache[code] = meta
+            TMP.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            return meta
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:80]}"
+            if attempt == 0:
+                time.sleep(5)
+    return {"error": err, "note": "取得失敗(値が無いのではなく、ページを取れなかった)。時価総額・発行済株式数は不明"}
+
+
+def one(conn, bd: str, code: str) -> dict:
     tn = datetime.now(JST)
     start = window_start(bd)
     days = trading_days(conn)
@@ -274,18 +304,15 @@ def one(conn, bd: str, code: str) -> dict:
             "reviewed": n["n_events"] is not None,
             "is_subject": (code in (n["subjects"] or [])) if n["n_events"] is not None else None,
             "events": evs, "note": n["note"]})
-    try:
-        meta = yahoo.fetch_jp_stats(code)
-        meta["fetched_at"] = datetime.now(JST).isoformat(timespec="minutes")
-        meta["note"] = ("Yahoo!ファイナンス日本版の表示値(asof は表示された基準日)。"
-                        "Float は取得していないので不明。読めなかった項目は含まない")
-    except Exception as e:  # 取れなければ不明として扱う
-        meta = {"error": f"{type(e).__name__}", "note": "時価総額・発行済株式数は不明"}
+    meta = jp_stats(bd, code)
     recent = recent_predictions(conn, days, tn)
     cov = newsmod.coverage(conn, bd, [code])
     news_cov = {"bulk": cov["bulk"], "per_source": cov["per_code"][code],
                 "material_checked": newsmod.material_checked(cov["bulk"], cov["per_code"][code])}
+    from surge_radar.price_limit import path_to_target
+    plimit = path_to_target(snap["features"]["close"]) if snap and snap["features"].get("close") else None
     return {"base_date": bd, "code": code, "security": sec,
+            "price_limit": plimit,
             "news_coverage": news_cov,
             "recently_predicted": recent.get(code),
             "label_version": snap["label_version"] if snap else None,

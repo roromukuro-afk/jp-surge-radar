@@ -105,12 +105,13 @@ _JP_STAT = {
 def fetch_jp_stats(code: str) -> dict:
     """Yahoo!ファイナンス日本版の銘柄ページから時価総額・発行済株式数を読む(値と基準日)。
     Float(浮動株)はこのページに無いので返さない。読めなかった項目は含めない(推測で埋めない)。
-    旧来の quoteSummary API は 2026-09-26 時点で空を返す(認証が要る)。"""
+    旧来の quoteSummary API は 2026-09-26 時点で空を返す(認証が要る)。
+    HTTP 200 以外は例外にする(2026-10-02: 続けて取ると途中から拒否され、空の結果が「値が無い」に見えていた)。"""
     from bs4 import BeautifulSoup
     r = _SESSION.get(f"https://finance.yahoo.co.jp/quote/{to_yahoo_symbol(code)}",
                      headers={"Accept-Language": "ja-JP"}, timeout=15)
     if r.status_code != 200:
-        return {}
+        raise RuntimeError(f"HTTP {r.status_code}")
     text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
     out = {}
     for key, rx in _JP_STAT.items():
