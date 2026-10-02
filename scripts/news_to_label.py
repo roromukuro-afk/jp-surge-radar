@@ -6,7 +6,10 @@ Material Window 内(基準日の終値の時刻以降に公開)の見出しを�
 
 株価・候補・成否は出さない(ラベルが値動きに引きずられないように)。
 
-使い方: python scripts/news_to_label.py [--limit 200] [--count]
+--oldest-first は逆順(古い背景から)。日次の実行(新しい順)と同時に動いても同じ見出しを取り合わないため、
+背景のラベル付けタスクが使う(2026-10-02)。
+
+使い方: python scripts/news_to_label.py [--limit 200] [--count] [--oldest-first]
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument("--count", action="store_true", help="未処理の件数だけ出す")
+    ap.add_argument("--oldest-first", action="store_true", help="古い背景から出す(背景のラベル付けタスク用)")
     a = ap.parse_args()
 
     with db.cursor() as conn:
@@ -43,17 +47,21 @@ def main() -> None:
                               "in_material_window": by.get(0, 0), "base_date_time_unknown": by.get(1, 0),
                               "older_background": by.get(2, 0)}, ensure_ascii=False))
             return
+        if a.oldest_first:
+            order, order_out = "p DESC, d ASC, n.title_key", "p.p DESC, p.d ASC, p.title_key"
+        else:
+            order, order_out = "p, d DESC, n.title_key", "p.p, p.d DESC, p.title_key"
         rows = conn.execute(
             f"""WITH pending AS (
                  SELECT n.title_key, MAX(n.date) d, {prio} p FROM news n
                  LEFT JOIN news_reviews v ON v.title_key = n.title_key
                  WHERE v.title_key IS NULL
-                 GROUP BY n.title_key ORDER BY p, d DESC, n.title_key LIMIT %(limit)s)
+                 GROUP BY n.title_key ORDER BY {order} LIMIT %(limit)s)
                SELECT p.title_key, p.d, p.p, n.title, n.source, n.code, s.name
                FROM pending p
                JOIN news n ON n.title_key = p.title_key
                LEFT JOIN securities s ON s.code = n.code
-               ORDER BY p.p, p.d DESC, p.title_key""",
+               ORDER BY {order_out}""",
             {"start": start, "bd": bd, "limit": a.limit}).fetchall()
 
     items: dict[str, dict] = {}
