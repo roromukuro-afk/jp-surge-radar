@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
 
-MATERIAL_VERSION = "material-v1.1"  # 2026-10-03: 迷いやすい見出しの付け方を procedures/label.md に追加
+MATERIAL_VERSION = "material-v1.2"  # 2026-10-03 v1.1・2026-10-06 v1.2: 迷いやすい見出しの付け方を procedures/label.md に追加
 
 EVENT_TYPES = {
     "業績実績", "業績見通し", "商取引・顧客", "提携・アライアンス", "製品・サービス・技術",
