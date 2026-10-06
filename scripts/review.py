@@ -54,7 +54,7 @@ def load() -> list[dict]:
     with db.cursor() as conn:
         rows = conn.execute(
             """SELECT c.id, c.base_date, c.code, s.name, c.labels, c.features, c.chart_patterns,
-                      c.material_status, c.material_event_ids, c.routes, c.thesis, c.base_close,
+                      c.material_status, c.material_event_ids, c.routes, c.thesis, c.base_close, c.model,
                       o.bars_tracked, o.max_ret, o.min_ret, o.hit, o.hit_day, o.final, o.status
                FROM candidates c LEFT JOIN outcomes o ON o.candidate_id = c.id
                LEFT JOIN securities s ON s.code = c.code
@@ -74,6 +74,8 @@ def load() -> list[dict]:
                 feats |= {f"材料:{e['event_type']}", f"材料段階:{e['stage']}", f"材料主体:{e['actor']}"}
                 feats |= {f"材料経路:{x}" for x in (e["pathways"] or [])}
         feats.add(f"材料状態:{r['material_status']}")
+        # 選んだモデル(定期タスクはアプリで選ばれているモデルで動き、日によって違う。2026-10-06 に判明)
+        feats.add(f"選定モデル:{r['model']}")
         feats |= {f"ルート:{x}" for x in (r["routes"] or [])}
         r["feats"] = feats
         r["unknown"] = unknown_labels(r["features"] or {})

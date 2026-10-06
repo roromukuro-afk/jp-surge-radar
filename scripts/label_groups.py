@@ -32,7 +32,7 @@ DISTANCE_THRESHOLD = 0.6
 def cluster_features(r: dict) -> frozenset[str]:
     """グループ分けに使うラベル。"""
     keep = {f for f in r["feats"]
-            if not f.startswith(("形:", "ルート:", "材料段階:", "材料主体:", "材料経路:"))}
+            if not f.startswith(("形:", "ルート:", "材料段階:", "材料主体:", "材料経路:", "選定モデル:"))}
     return frozenset(keep)
 
 
